@@ -1,0 +1,228 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Working with Claude Code Sub-Agents
+
+When working on this codebase, Claude Code will proactively use specialized sub-agents for different tasks:
+
+- **golang-architect**: Used for designing new application architectures, planning package structures, making architectural decisions, or adding new packages
+- **golang-engineer**: Used for Go implementation that needs engineering judgement (multi-file changes, debugging, refactoring)
+- **golang-coder**: Used for implementing a single, fully specified function, method or test
+- **code-quality-inspector**: Used for code review and quality assurance of recently written or modified code
+
+These sub-agents will be automatically engaged based on the nature of your request to ensure high-quality code and architectural decisions.
+
+## Project Overview
+
+MCPFusion is a Model Context Protocol (MCP) server implementation in Go that enables AI clients to interact with APIs and services through a standardized interface. It provides tools, resources, and prompts to MCP clients.
+
+## Release Status
+
+MCPFusion is **released**. It is used only by our own applications, but they
+import its packages: any change to an exported identifier, signature or
+behaviour is a breaking change. Ask before making one, and record it in
+`CHANGELOG.md` so the dependent applications can be updated.
+
+## Makefile
+
+There is deliberately no `make install` / `make uninstall`, and the binary has
+no `install` / `uninstall` subcommands. Deployment uses `mcpfusion.service` by
+hand (see README). Do not add them unless asked.
+
+## Key Commands
+
+### Running the Server
+```bash
+# Basic run (defaults to port 8888)
+go run .
+
+# Run with custom port
+go run . -port 8081
+
+# Run with debug logging
+go run . -debug
+
+# Build the binary (test first with plain `make`)
+make build
+```
+
+**Note**: Both SSE and Streamable HTTP transports are always available simultaneously.
+
+### Testing
+```bash
+# Full regression suite (both modules, race detector) — the one gate
+make test
+
+# Test, then build mcpfusion and cmd/auth/fusion-auth
+make
+
+# Run tests with coverage
+go test -cover ./...
+
+# Run MCP function tests (requires running server, APIKEY and probe)
+make test-integration
+
+# Run individual MCP function tests
+cd tests && ./test_profile.sh > profile_output.log
+```
+
+## Architecture
+
+### Core Components
+
+1. **MCP Server** (`mcpserver/`)
+   - Handles MCP protocol implementation
+   - Manages SSE and HTTP transports
+   - Routes tool/resource/prompt calls to providers
+
+2. **Provider Interfaces** (`global/`)
+   - `ToolProvider`: Implements tools (functions AI can call)
+   - `ResourceProvider`: Implements resources (data AI can read)
+   - `PromptProvider`: Implements prompts (templates for AI)
+   - All providers implement `RegisterTools()`, `RegisterResources()`, or `RegisterPrompts()`
+
+3. **Transport Layer**
+   - Both transports are always available simultaneously
+   - **SSE Transport (legacy)**: `/sse` and `/message` endpoints for real-time communication
+   - **Streamable HTTP Transport (modern)**: `/mcp` endpoint per MCP specification
+
+### Handler Patterns
+
+Handler types are defined in `global/interfaces.go`:
+```go
+type ToolHandler func(options map[string]any) (string, error)
+type ResourceHandler func(uri string, options map[string]any) (ResourceResponse, error)
+type PromptHandler func(options map[string]any) (string, Messages, error)
+```
+
+## Configuration
+
+MCPFusion is configured through one or more JSON files. Sensitive data, such as M365 application information required for oauth authentication, can be reference in the JSON config files as environment variables. For example:
+
+```bash
+# Example environment variables
+# Microsoft 365 Graph API
+MS365_CLIENT_ID=your-client-id
+MS365_TENANT_ID=your-tenant-id
+```
+
+## Important Patterns
+
+1. **Error Handling**: Always return structured errors from handlers
+2. **Logging**: Use `mlogger` package for consistent logging
+3. **Configuration**: Use functional options for flexible configuration
+4. **Testing**: Each provider should have its own test file
+5. **Multi-Tenant Authentication**: Automatically enabled for all providers with database-backed token system
+6. **Bearer Token Authentication**: Standard Authorization: Bearer <token> headers required
+7. **Provider Creation**: Simply use `New()` - multi-tenant auth is automatic
+
+## Code Quality Requirements
+
+**CRITICAL**: All code MUST compile and pass tests before being committed. This is non-negotiable.
+
+**CRITICAL**: NEVER push directly to main or master. Always create a feature or bug branch and open a PR.
+
+### Pre-Commit Checklist
+
+Before committing any code changes:
+
+1. **Compilation Check**: Run `make build` to ensure everything compiles
+2. **Test Execution**: Run `make test` (build, vet, format, lint and race-enabled tests for both modules) and ensure it passes
+3. **Type Safety**: Verify all function calls match their signatures
+4. **Variable Declarations**: Ensure all variables are properly declared before use
+5. **Live Tool Testing**: When adding or modifying MCP tools, call the tool via the MCP connection (using the `mcp__fusion__*` tools) to verify it works end-to-end before committing. Compilation and unit tests alone are not sufficient — the tool must be invoked on a running server to catch routing, auth middleware, and integration issues.
+6. **Integration Verification**: After live tool testing, verify that side effects (metrics, logging, state changes) are correct by calling related tools or inspecting output. For example, after testing a feature that tracks request counts, make real calls to multiple services and then verify the counts are accurate. Do not assume wiring is correct just because a tool returns a result — confirm that data flows end-to-end through all layers (e.g., config keys vs display names, context propagation, cross-package recording). This is open-source, production-quality code that others will rely on.
+
+### Common Issues to Avoid
+
+- **Function Signature Mismatches**: Always check the actual return values of functions (e.g., `fusion.New()` returns `(*Fusion, error)`, not `*Fusion`)
+- **Type Mismatches**: Verify field types match struct definitions (e.g., `TenantHash` is `string`, not `[]byte`)
+- **Undefined Variables**: Use `:=` for new variable declarations, `=` for assignments to existing variables
+- **Nil Checks**: Add nil checks for optional dependencies like `multiTenantAuth` before calling methods
+
+### Testing Standards
+
+- All new features must include comprehensive unit tests
+- Tests must cover success cases, error cases, and edge cases
+- Mock external dependencies appropriately
+- Use table-driven tests for multiple scenarios
+
+## Multi-Tenant Authentication
+
+MCPFusion provides multi-tenant authentication (keyed to the user's API key) with the following components:
+
+### Database Package (`db/`)
+- BoltDB-based persistent storage (`go.etcd.io/bbolt`)
+- API token management with auto-generation
+- OAuth token storage per tenant per service
+- Service credentials management
+- Comprehensive CLI tools for token administration
+
+### Authentication Flow
+1. **API Token Generation**: Use `./mcpfusion -token-add` to create tenant tokens
+2. **Bearer Authentication**: Include `Authorization: Bearer <token>` in HTTP requests
+3. **Tenant Isolation**: Each API token represents a separate tenant namespace
+4. **Service Independence**: Each tenant has independent OAuth tokens for each service
+
+### Token Management CLI
+```bash
+# Generate new API token
+./mcpfusion -token-add "Production environment"
+
+# List all tokens
+./mcpfusion -token-list
+
+# Delete token
+./mcpfusion -token-del abc12345
+```
+
+## Testing Requirements
+
+**IMPORTANT**: Each MCP tool provided by the server MUST have at least one separate test file in the `tests/` directory.
+
+### Test Structure
+- Each MCP tool should have its own dedicated test script (e.g., `test_toolname.sh`)
+- Test scripts should generate timestamped `.log` files with complete request/response data
+- The `run_all_tests.sh` script should include all individual test scripts
+
+### Current Test Coverage
+
+**Core tests** (`tests/`): run via `tests/run_all_tests.sh`
+- `test_health.sh` - Tests server health endpoint
+- `test_knowledge.sh` - Tests knowledge store tools
+- `test_knowledge_key.sh` - Tests knowledge key operations
+- `test_stdio.sh` - Tests stdio transport
+
+**Microsoft 365** (`tests/M365/`): run via `tests/M365/run_all_tests.sh`
+- `test_profile.sh` - Tests `microsoft365_profile_get`
+- `test_calendar_summary.sh` - Tests `microsoft365_calendar_read_summary`
+- `test_calendar_details.sh` - Tests `microsoft365_calendar_read_details`
+- `test_mail.sh` - Tests `microsoft365_mail_read_inbox`
+- `test_contacts.sh` - Tests `microsoft365_contacts_list`
+- (and many more — see `tests/M365/`)
+
+**Google** (`tests/Google/`): run via `tests/Google/run_all_tests.sh`
+- `test_profile.sh` - Tests `google_profile_get`
+- `test_contacts_list.sh`, `test_contacts_get.sh`, `test_contacts_search.sh`
+- `test_gmail_draft_*.sh` - Tests Gmail draft operations
+
+**PwnDoc** (`tests/PwnDoc/`)
+- `test_audits.sh` - Tests audit listing
+- `test_findings.sh` - Tests finding operations
+- `test_clients.sh` - Tests client/company management
+
+### Adding New Tool Tests
+When adding new MCP tools:
+1. Create a dedicated test script in the appropriate subdirectory (e.g., `tests/M365/test_newtool.sh`)
+2. Add the test to the corresponding `run_all_tests.sh` for that subdirectory
+3. Update the test documentation in `tests/README.md`
+4. Ensure the test covers multiple scenarios (default params, custom fields, edge cases)
+
+## MCP Protocol Details
+
+The server implements MCP v1.0.0 with:
+- Tool execution via `tools/call`
+- Resource retrieval via `resources/read`
+- Prompt rendering via `prompts/get`
+- Capability negotiation during initialization

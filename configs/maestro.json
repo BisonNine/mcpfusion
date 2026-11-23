@@ -1,0 +1,10 @@
+{
+  "services": {
+    "maestro": {
+      "name": "Maestro",
+      "transport": "mcp_stdio",
+      "command": "/usr/local/bin/maestro",
+      "toolRefreshInterval": "5m"
+    }
+  }
+}

@@ -1,0 +1,27 @@
+[Unit]
+Description=MCPFusion
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=mcpfusion
+Group=mcpfusion
+WorkingDirectory=/opt/mcpfusion
+ExecStart=/opt/mcpfusion/mcpfusion
+Restart=on-failure
+RestartSec=5
+
+# Environment variables
+Environment=MCP_FUSION_DB_DIR=/opt/mcpfusion
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mcpfusion
+
+# Resource limits
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

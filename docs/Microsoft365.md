@@ -1,0 +1,765 @@
+# Microsoft 365 API Setup Guide for MCPFusion
+
+This guide walks you through setting up MCPFusion to connect to Microsoft 365 APIs for accessing calendar, mail, contacts, and profile information.
+
+## Prerequisites
+
+- Microsoft 365 account (work, school, or personal)
+- Admin access to Azure Portal (for app registration)
+- MCPFusion installed and built
+
+## Step 1: Azure App Registration
+
+### 1.1 Access Azure Portal
+
+1. Navigate to [Azure Portal](https://portal.azure.com)
+2. Sign in with your Microsoft 365 admin account
+
+### 1.2 Create New App Registration
+
+1. Go to **Azure Active Directory** → **App registrations**
+2. Click **"New registration"**
+3. Configure the application:
+   - **Name**: `MCPFusion` (or your preferred name)
+   - **Supported account types**: Choose based on your needs:
+     - `Accounts in this organizational directory only` - Single tenant (your org only)
+     - `Accounts in any organizational directory` - Multitenant (any work/school account)
+     - `Accounts in any organizational directory and personal Microsoft accounts` - All users
+   - **Redirect URI**: Leave blank (not needed for device flow)
+4. Click **"Register"**
+
+### 1.3 Save Application IDs
+
+After registration, save these values:
+- **Application (client) ID**: `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
+- **Directory (tenant) ID**: `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
+
+You'll find these on the app's Overview page.
+
+### 1.4 Configure API Permissions
+
+1. In your app registration, go to **"API permissions"**
+2. Click **"Add a permission"**
+3. Select **"Microsoft Graph"**
+4. Choose **"Delegated permissions"**
+5. Add the following permissions:
+
+   **Essential Permissions:**
+   - `User.Read` - Sign in and read user profile
+   - `Calendars.ReadWrite` - Read, create, and modify calendar events
+   - `Mail.Read` - Read user mail
+   - `Mail.ReadWrite` - Create drafts, move messages, and manage mail folders
+   - `Contacts.Read` - Read and search user contacts
+   - `Files.Read` - Read OneDrive files
+   - `Sites.Read.All` - Read SharePoint sites
+
+   **Optional Permissions (add if needed):**
+   - `Mail.Send` - Send mail as the user
+   - `Contacts.ReadWrite` - Create and modify contacts
+
+6. Click **"Add permissions"**
+
+### 1.5 Enable Device Code Flow
+
+1. Go to **"Authentication"** in the left menu
+2. Scroll to **"Advanced settings"**
+3. Set **"Allow public client flows"** to **Yes**
+4. Click **"Save"**
+
+### 1.6 (Optional) Grant Admin Consent
+
+If you're setting this up for your organization:
+1. Return to **"API permissions"**
+2. Click **"Grant admin consent for [Your Organization]"**
+3. Confirm the action
+
+This prevents users from needing to individually consent to permissions.
+
+## Step 2: Configure Environment Variables
+
+### 2.1 Create Configuration File
+
+Add your credentials to `/opt/mcpfusion/env`. MCPFusion automatically loads this file on startup:
+
+```bash
+nano /opt/mcpfusion/env
+```
+
+### 2.2 Add Your Configuration
+
+Add the following content with your actual IDs:
+
+```bash
+# Microsoft 365 Configuration
+MS365_CLIENT_ID=your-application-client-id-here
+MS365_TENANT_ID=your-directory-tenant-id-here
+
+# Optional: Specify tenant type
+# MS365_TENANT_ID=common           # Multitenant (default)
+# MS365_TENANT_ID=organizations    # Work/school accounts only
+# MS365_TENANT_ID=consumers        # Personal Microsoft accounts only
+# MS365_TENANT_ID=your-tenant-id   # Specific tenant only
+```
+
+**Example with actual values:**
+```bash
+MS365_CLIENT_ID=a1b2c3d4-e5f6-7890-abcd-ef1234567890
+MS365_TENANT_ID=12345678-90ab-cdef-1234-567890abcdef
+```
+
+### 2.3 Secure the File
+
+```bash
+chmod 600 /opt/mcpfusion/env
+```
+
+## Step 3: Run MCPFusion with Microsoft 365
+
+### 3.1 Build MCPFusion
+
+```bash
+cd /path/to/MCPFusion
+go build -o mcpfusion .
+```
+
+### 3.2 Start the Server
+
+```bash
+./mcpfusion -config configs/microsoft365.json -port 8888
+```
+
+You should see output like:
+```
+2025-01-07 10:00:00 MCP [INFO] Loading configuration from: configs/microsoft365.json
+2025-01-07 10:00:00 MCP [INFO] Registered 13 dynamic tools from configuration
+2025-01-07 10:00:00 MCP [INFO] MCP server listening on http://localhost:8888
+```
+
+## Step 4: First-Time Authentication
+
+### 4.1 Device Code Flow
+
+When you first use a Microsoft 365 tool, you'll see a device code prompt:
+
+```
+Please visit https://microsoft.com/devicelogin and enter code: ABCD1234
+```
+
+### 4.2 Complete Authentication
+
+1. Open https://microsoft.com/devicelogin in your browser
+2. Enter the provided code (e.g., `ABCD1234`)
+3. Sign in with your Microsoft 365 account
+4. Review the requested permissions
+5. Click **"Accept"** to grant permissions
+
+### 4.3 Token Storage
+
+After successful authentication:
+- Tokens are cached automatically
+- No need to re-authenticate for subsequent requests
+- Tokens refresh automatically when expired
+
+## Step 5: Available Microsoft 365 Tools
+
+Once configured, these MCP tools are available using the supplied microsoft365.json configuration file.
+
+### 5.1 Profile Management
+**Tool**: `microsoft365_profile_get`
+**Description**: Get your Microsoft 365 profile information
+**Parameters**: 
+- `select` (optional): Fields to include (default: displayName,mail,userPrincipalName,jobTitle,department,companyName)
+
+### 5.2 Calendar Management
+
+**List All Calendars**
+**Tool**: `microsoft365_calendars_list`
+**Description**: Get all user calendars
+**Parameters**:
+- `select` (optional): Fields to include (default: name,id,owner,isDefaultCalendar)
+- `top` (optional): Number of calendars (default: 1000, max: 1000)
+- `skip` (optional): Number of items to skip for pagination (default: 0)
+
+**Calendar Events (All Calendars)**
+**Tool**: `microsoft365_calendar_read_summary`
+**Description**: Get calendar events with basic information
+**Parameters**:
+- `startDate` (required): Start date in YYYYMMDD format. Use #DAYS-N for N days ago or #DAYS+N for N days in future, #MINS-N for N minutes ago or #MINS+N for N minutes in future
+- `endDate` (required): End date in YYYYMMDD format. Use #DAYS-N for N days ago or #DAYS+N for N days in future, #MINS-N for N minutes ago or #MINS+N for N minutes in future
+- `select` (optional): Fields to include (default: subject,start,end)
+- `top` (optional): Number of events (default: 100, max: 1000)
+- `skip` (optional): Number of items to skip for pagination (default: 0)
+
+**Tool**: `microsoft365_calendar_read_details`
+**Description**: Get calendar events with full details
+**Parameters**:
+- `startDate` (required): Start date in YYYYMMDD format. Use #DAYS-N for N days ago or #DAYS+N for N days in future, #MINS-N for N minutes ago or #MINS+N for N minutes in future
+- `endDate` (required): End date in YYYYMMDD format. Use #DAYS-N for N days ago or #DAYS+N for N days in future, #MINS-N for N minutes ago or #MINS+N for N minutes in future
+- `select` (optional): Fields to include (default: subject,body,bodyPreview,organizer,attendees,start,end,location)
+- `top` (optional): Number of events (default: 10, max: 1000)
+- `skip` (optional): Number of items to skip for pagination (default: 0)
+
+**Calendar Events (Specific Calendar)**
+**Tool**: `microsoft365_calendar_events_read_summary`
+**Description**: Get events from a specific calendar (summary)
+**Parameters**:
+- `calendarId` (required): Calendar ID to retrieve events from
+- `startDate` (optional): Start date in YYYYMMDD format. Use #DAYS-N for N days ago or #DAYS+N for N days in future, #MINS-N for N minutes ago or #MINS+N for N minutes in future
+- `endDate` (optional): End date in YYYYMMDD format. Use #DAYS-N for N days ago or #DAYS+N for N days in future, #MINS-N for N minutes ago or #MINS+N for N minutes in future
+- `select` (optional): Fields to include (default: subject,start,end)
+- `top` (optional): Number of events (default: 100, max: 1000)
+- `skip` (optional): Number of items to skip for pagination (default: 0)
+
+**Tool**: `microsoft365_calendar_events_read_details`
+**Description**: Get events from a specific calendar (detailed)
+**Parameters**:
+- `calendarId` (required): Calendar ID to retrieve events from
+- `startDate` (optional): Start date in YYYYMMDD format. Use #DAYS-N for N days ago or #DAYS+N for N days in future, #MINS-N for N minutes ago or #MINS+N for N minutes in future
+- `endDate` (optional): End date in YYYYMMDD format. Use #DAYS-N for N days ago or #DAYS+N for N days in future, #MINS-N for N minutes ago or #MINS+N for N minutes in future
+- `select` (optional): Fields to include (default: subject,body,bodyPreview,organizer,attendees,start,end,location)
+- `top` (optional): Number of events (default: 10, max: 1000)
+- `skip` (optional): Number of items to skip for pagination (default: 0)
+
+**Individual Calendar Event**
+**Tool**: `microsoft365_calendar_read_event`
+**Description**: Get a specific calendar event by ID
+**Parameters**:
+- `id` (required): Event ID to retrieve
+- `select` (optional): Fields to include
+
+**Create Calendar Event**
+**Tool**: `microsoft365_calendar_event_create`
+**Description**: Create a new calendar event with subject, start/end times, attendees, location, and availability status
+**Parameters**:
+- `subject` (required): Event subject/title
+- `start` (required): Start time object (e.g., `{"dateTime": "2025-06-15T10:00:00", "timeZone": "America/New_York"}`)
+- `end` (required): End time object (e.g., `{"dateTime": "2025-06-15T11:00:00", "timeZone": "America/New_York"}`)
+- `body` (optional): Event body/description (e.g., `{"contentType": "HTML", "content": "<p>Agenda</p>"}`)
+- `location` (optional): Event location (e.g., `{"displayName": "Conference Room 1"}`)
+- `attendees` (optional): Array of attendees (e.g., `[{"emailAddress": {"address": "user@example.com"}, "type": "required"}]`)
+- `showAs` (optional): Free/busy status (free, tentative, busy, oof, workingElsewhere, unknown; default: busy)
+- `isAllDay` (optional): Whether this is an all-day event (default: false)
+- `isOnlineMeeting` (optional): Whether to create a Teams meeting (default: false)
+- `importance` (optional): Event importance (low, normal, high; default: normal)
+
+**Update Calendar Event**
+**Tool**: `microsoft365_calendar_event_update`
+**Description**: Update an existing calendar event. Only provide the fields you want to change.
+**Parameters**:
+- `id` (required): Event ID to update
+- `subject` (optional): Updated event subject/title
+- `start` (optional): Updated start time object
+- `end` (optional): Updated end time object
+- `body` (optional): Updated event body/description
+- `location` (optional): Updated event location
+- `attendees` (optional): Updated array of attendees
+- `showAs` (optional): Updated free/busy status
+- `isAllDay` (optional): Whether this is an all-day event
+- `isOnlineMeeting` (optional): Whether to enable online meeting (Teams)
+- `importance` (optional): Updated event importance
+
+### 5.3 Mail Management
+
+**List Mail Folders**
+**Tool**: `microsoft365_mail_folders_list`
+**Description**: Get all mail folders for the user
+**Parameters**:
+- `select` (optional): Fields to include (default: displayName,id,parentFolderId,childFolderCount,unreadItemCount,totalItemCount)
+- `top` (optional): Number of folders (default: 1000, max: 1000)
+- `skip` (optional): Number of items to skip for pagination (default: 0)
+
+**Mail Messages (Inbox)**
+**Tool**: `microsoft365_mail_read_inbox`
+**Description**: Get inbox messages with basic information
+**Parameters**:
+- `top` (optional): Number of messages (default: 10, max: 1000)
+- `select` (optional): Fields to include (default: subject,from,receivedDateTime,isRead)
+- `filter` (optional): Filter expression. Use time tokens: #DAYS-N (N days ago), #DAYS+N (N days in future), #HOURS-N (N hours ago), #HOURS+N (N hours in future), #MINS-N (N minutes ago), #MINS+N (N minutes in future)
+  - Examples: 'isRead eq false', 'receivedDateTime ge #DAYS-1', 'hasAttachments eq true and receivedDateTime ge #DAYS-7'
+- `skip` (optional): Number of items to skip for pagination (default: 0)
+
+**Mail Messages (Specific Folder)**
+**Tool**: `microsoft365_mail_folder_messages`
+**Description**: Get messages from a specific mail folder
+**Parameters**:
+- `folderId` (required): Mail folder ID to retrieve messages from
+- `top` (optional): Number of messages (default: 10, max: 1000)
+- `select` (optional): Fields to include (default: subject,from,receivedDateTime,bodyPreview,isRead)
+- `filter` (optional): OData filter expression. Use time tokens: #DAYS-N (N days ago), #DAYS+N (N days in future), #HOURS-N (N hours ago), #HOURS+N (N hours in future), #MINS-N (N minutes ago), #MINS+N (N minutes in future)
+- `skip` (optional): Number of items to skip for pagination (default: 0)
+
+**Individual Mail Message**
+**Tool**: `microsoft365_mail_read_message`
+**Description**: Get a specific email message by ID
+**Parameters**:
+- `id` (required): Message ID to retrieve
+- `select` (optional): Fields to include
+
+**Create Mail Folder**
+**Tool**: `microsoft365_mail_folder_create`
+**Description**: Create a new mail folder for organizing messages
+**Parameters**:
+- `displayName` (required): Name of the mail folder to create
+
+**Move Mail Message**
+**Tool**: `microsoft365_mail_message_move`
+**Description**: Move a message to a different mail folder. Use `microsoft365_mail_folders_list` to get folder IDs.
+**Parameters**:
+- `id` (required): The message ID of the message to move
+- `destinationId` (required): The ID of the destination mail folder
+
+**Create Draft Email**
+**Tool**: `microsoft365_mail_draft_create`
+**Description**: Create a new draft email message. The draft is saved but NOT sent.
+**Parameters**:
+- `subject` (required): Email subject line
+- `body` (required): Email body (e.g., `{"contentType": "HTML", "content": "<p>Hello</p>"}`)
+- `toRecipients` (optional): Array of To recipients
+- `ccRecipients` (optional): Array of CC recipients
+- `bccRecipients` (optional): Array of BCC recipients
+- `importance` (optional): Message importance (low, normal, high; default: normal)
+
+**Create Draft Reply**
+**Tool**: `microsoft365_mail_draft_reply`
+**Description**: Create a draft reply to an existing message. The draft is saved but NOT sent.
+**Parameters**:
+- `id` (required): The message ID of the message to reply to
+- `comment` (optional): Comment to include in the reply body
+
+**Create Draft Reply All**
+**Tool**: `microsoft365_mail_draft_reply_all`
+**Description**: Create a draft reply-all to an existing message. The draft is saved but NOT sent.
+**Parameters**:
+- `id` (required): The message ID of the message to reply all to
+- `comment` (optional): Comment to include in the reply body
+
+**Create Draft Forward**
+**Tool**: `microsoft365_mail_draft_forward`
+**Description**: Create a draft forward of an existing message. The draft is saved but NOT sent.
+**Parameters**:
+- `id` (required): The message ID of the message to forward
+- `comment` (optional): Comment to include in the forwarded message body
+- `toRecipients` (optional): Array of recipients to forward to
+
+**Update Draft Email**
+**Tool**: `microsoft365_mail_draft_update`
+**Description**: Update an existing draft email message. Only provide the fields you want to change.
+**Parameters**:
+- `id` (required): The message ID of the draft to update
+- `subject` (optional): Updated email subject line
+- `body` (optional): Updated email body
+- `toRecipients` (optional): Updated array of To recipients
+- `ccRecipients` (optional): Updated array of CC recipients
+- `bccRecipients` (optional): Updated array of BCC recipients
+- `importance` (optional): Updated message importance
+
+**Delete Draft Email**
+**Tool**: `microsoft365_mail_draft_delete`
+**Description**: Permanently delete a draft email message. This action cannot be undone.
+**Parameters**:
+- `id` (required): The message ID of the draft to delete
+
+**List Draft Emails**
+**Tool**: `microsoft365_mail_draft_list`
+**Description**: List email messages in the Drafts folder
+**Parameters**:
+- `top` (optional): Number of drafts to retrieve (default: 50, max: 1000)
+- `select` (optional): Fields to include (default: subject,toRecipients,ccRecipients,bodyPreview,lastModifiedDateTime,isDraft,hasAttachments)
+- `filter` (optional): OData filter expression with time token support
+- `skip` (optional): Number of items to skip for pagination (default: 0)
+- `orderby` (optional): Sort order (default: lastModifiedDateTime desc)
+
+### 5.4 Contacts Management
+
+**List Contacts**
+**Tool**: `microsoft365_contacts_list`
+**Description**: Get contacts from the user's address book
+**Parameters**:
+- `top` (optional): Number of contacts (default: 25, max: 1000)
+- `select` (optional): Fields to include (default: displayName,emailAddresses,businessPhones,jobTitle,companyName)
+- `filter` (optional): OData filter expression. Use time tokens: #DAYS-N (N days ago), #DAYS+N (N days in future), #HOURS-N (N hours ago), #HOURS+N (N hours in future), #MINS-N (N minutes ago), #MINS+N (N minutes in future)
+- `skip` (optional): Number of items to skip for pagination (default: 0)
+
+**Individual Contact**
+**Tool**: `microsoft365_contacts_read_contact`
+**Description**: Get a specific contact by ID
+**Parameters**:
+- `id` (required): Contact ID to retrieve
+- `select` (optional): Fields to include
+
+**Search Contacts**
+**Tool**: `microsoft365_contacts_search`
+**Description**: Search contacts by name, email, or phone number
+**Parameters**:
+- `search` (optional): Full-text search across contact fields (e.g., 'John', 'john@company.com', 'Marketing')
+- `filter` (optional): OData filter expression (e.g., `startswith(displayName,'John')`)
+- `select` (optional): Fields to include (default: displayName,emailAddresses,businessPhones,mobilePhone,jobTitle,companyName)
+- `top` (optional): Number of contacts to retrieve (default: 25, max: 1000)
+
+### 5.5 Search Capabilities
+
+**Search Calendar Events**
+**Tool**: `microsoft365_calendar_search`
+**Description**: Search calendar events with flexible filtering by subject, attendees, location, and date range
+**Parameters**:
+- `startDate` (required): Start date in YYYYMMDD format. Use #DAYS-N for N days ago or #DAYS+N for N days in future, #MINS-N for N minutes ago or #MINS+N for N minutes in future
+- `endDate` (required): End date in YYYYMMDD format. Use #DAYS-N for N days ago or #DAYS+N for N days in future, #MINS-N for N minutes ago or #MINS+N for N minutes in future
+- `filter` (optional): OData filter expression. Use time tokens: #DAYS-N (N days ago), #DAYS+N (N days in future), #HOURS-N (N hours ago), #HOURS+N (N hours in future), #MINS-N (N minutes ago), #MINS+N (N minutes in future)
+  - Examples: `contains(subject,'Meeting')`, `contains(subject,'Project')`, `start/dateTime ge #DAYS-7`
+  - `attendees/any(a:contains(a/emailAddress/address,'john@example.com'))`, `contains(location/displayName,'Room 101')`
+- `select` (optional): Fields to include (default: subject,start,end,location,organizer,attendees)
+- `top` (optional): Number of events (default: 50, max: 1000)
+- `skip` (optional): Number of items to skip for pagination (default: 0)
+
+**Search Mail Messages**
+**Tool**: `microsoft365_mail_search`
+**Description**: Search mail messages with flexible filtering and full-text search
+**Parameters**:
+- `filter` (optional): OData filter expression. Use time tokens: #DAYS-N (N days ago), #DAYS+N (N days in future), #HOURS-N (N hours ago), #HOURS+N (N hours in future), #MINS-N (N minutes ago), #MINS+N (N minutes in future)
+  - Examples: `contains(subject,'Invoice')`, `contains(from/emailAddress/address,'boss@company.com')`
+  - `receivedDateTime ge #DAYS-3`, `isRead eq false and receivedDateTime ge #DAYS-1`, `hasAttachments eq true and receivedDateTime ge #DAYS-7`
+- `search` (optional): Full-text search across message content
+  - Examples: `invoice payment`, `from:john@company.com`, `subject:meeting`, `attachment:*.pdf`, `urgent OR important`
+- `select` (optional): Fields to include (default: subject,from,receivedDateTime,bodyPreview,isRead,hasAttachments)
+- `top` (optional): Number of messages (default: 25, max: 1000)
+
+### 5.6 File Management
+
+**List OneDrive Files**
+**Tool**: `microsoft365_files_list`
+**Description**: List files and folders in OneDrive root directory
+**Parameters**:
+- `filter` (optional): OData filter expression. Use time tokens: #DAYS-N (N days ago), #DAYS+N (N days in future), #HOURS-N (N hours ago), #HOURS+N (N hours in future), #MINS-N (N minutes ago), #MINS+N (N minutes in future)
+  - Examples: `file ne null`, `folder ne null`, `file/mimeType eq 'application/pdf'`, `lastModifiedDateTime ge #DAYS-30`
+- `select` (optional): Fields to include (default: name,size,lastModifiedDateTime,webUrl,file,folder,parentReference)
+- `top` (optional): Number of items (default: 100, max: 1000)
+- `orderby` (optional): Sort order (default: name asc)
+  - Options: name asc, name desc, lastModifiedDateTime desc, lastModifiedDateTime asc, size desc, size asc
+- `expand` (optional): Related data to include (e.g., 'permissions', 'children', 'thumbnails')
+
+**Search OneDrive Files**
+**Tool**: `microsoft365_files_search`
+**Description**: Search files in OneDrive with flexible filtering by name, content type, and modification date
+**Parameters**:
+- `searchQuery` (required): Search query for file names and content
+  - Examples: `invoice`, `*.pdf`, `report 2025`, `presentation`, `*.docx`, `budget`
+- `filter` (optional): OData filter expression
+  - Examples: `file/mimeType eq 'application/pdf'`, `lastModifiedDateTime ge 2025-01-01T00:00:00Z`, `size gt 1048576`, `folder ne null`, `file ne null`
+- `select` (optional): Fields to include (default: name,size,lastModifiedDateTime,webUrl,file,folder)
+- `top` (optional): Number of items (default: 50, max: 1000)
+- `orderby` (optional): Sort order (default: lastModifiedDateTime desc)
+  - Options: lastModifiedDateTime desc, lastModifiedDateTime asc, name asc, name desc, size desc, size asc
+
+**Read File Details**
+**Tool**: `microsoft365_files_read_file`
+**Description**: Get detailed information about a specific file by ID
+**Parameters**:
+- `id` (required): File ID to retrieve
+- `select` (optional): Fields to include (default: name,size,lastModifiedDateTime,webUrl,file,folder,parentReference,createdDateTime,lastModifiedBy)
+- `expand` (optional): Related data to include (e.g., 'permissions', 'children', 'thumbnails')
+
+**Download File Content**
+**Tool**: `microsoft365_files_download_content`
+**Description**: Download the actual content of a file (binary or text)
+**Parameters**:
+- `id` (required): File ID to download
+
+**List Folder Contents**
+**Tool**: `microsoft365_files_list_children`
+**Description**: List files and folders within a specific directory
+**Parameters**:
+- `id` (required): Folder ID to list contents
+- `select` (optional): Fields to include (default: name,size,lastModifiedDateTime,webUrl,file,folder,id,parentReference)
+- `top` (optional): Number of items (default: 200, max: 1000)
+- `orderby` (optional): Sort order (default: name asc)
+  - Options: name asc, name desc, lastModifiedDateTime desc, lastModifiedDateTime asc, size desc, size asc
+- `filter` (optional): OData filter expression. Use time tokens: #DAYS-N (N days ago), #DAYS+N (N days in future), #HOURS-N (N hours ago), #HOURS+N (N hours in future), #MINS-N (N minutes ago), #MINS+N (N minutes in future)
+- `expand` (optional): Related data to include (e.g., 'permissions', 'children', 'thumbnails')
+
+**Get File/Folder by Path**
+**Tool**: `microsoft365_files_get_by_path`
+**Description**: Get file or folder metadata using file system path
+**Parameters**:
+- `filePath` (required): File or folder path from root (e.g., 'Documents/report.docx', 'Projects/MyFolder')
+- `select` (optional): Fields to include (default: name,size,lastModifiedDateTime,webUrl,file,folder,id,parentReference,createdDateTime)
+- `expand` (optional): Related data to include (e.g., 'permissions', 'children', 'thumbnails')
+
+**List Recent Files**
+**Tool**: `microsoft365_files_recent`
+**Description**: List recently accessed files across all drives (OneDrive, SharePoint, Teams)
+**Parameters**:
+- `select` (optional): Fields to include (default: name,size,lastModifiedDateTime,webUrl,file,folder,id,parentReference,lastAccessedDateTime,remoteItem)
+- `top` (optional): Number of recent items (default: 50, max: 1000)
+- `expand` (optional): Related data to include (e.g., 'permissions', 'children', 'thumbnails')
+
+**List Folder Contents by Path**
+**Tool**: `microsoft365_files_list_folder_by_path`
+**Description**: Navigate to folder by path and list its contents
+**Parameters**:
+- `folderPath` (required): Folder path from root (e.g., 'Documents', 'Projects/Current', 'Shared Documents')
+- `select` (optional): Fields to include (default: name,size,lastModifiedDateTime,webUrl,file,folder,id,parentReference)
+- `top` (optional): Number of items (default: 200, max: 1000)
+- `orderby` (optional): Sort order (default: name asc)
+  - Options: name asc, name desc, lastModifiedDateTime desc, lastModifiedDateTime asc, size desc, size asc
+- `filter` (optional): OData filter expression. Use time tokens: #DAYS-N (N days ago), #DAYS+N (N days in future), #HOURS-N (N hours ago), #HOURS+N (N hours in future), #MINS-N (N minutes ago), #MINS+N (N minutes in future)
+- `expand` (optional): Related data to include (e.g., 'permissions', 'children', 'thumbnails')
+
+## Step 6: Testing the Integration
+
+### 6.1 Using curl
+
+Test profile retrieval:
+```bash
+curl -X POST http://localhost:8888 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "name": "microsoft365_profile",
+      "arguments": {}
+    },
+    "id": 1
+  }'
+```
+
+Test calendar retrieval:
+```bash
+curl -X POST http://localhost:8888 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "name": "microsoft365_calendar_read_summary",
+      "arguments": {
+        "startDate": "20250101",
+        "endDate": "20250131"
+      }
+    },
+    "id": 2
+  }'
+```
+
+Test calendar search:
+```bash
+curl -X POST http://localhost:8888 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "name": "microsoft365_calendar_search",
+      "arguments": {
+        "startDate": "20250101",
+        "endDate": "20250131",
+        "$filter": "contains(subject,\"Meeting\")"
+      }
+    },
+    "id": 3
+  }'
+```
+
+Test mail search:
+```bash
+curl -X POST http://localhost:8888 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "name": "microsoft365_mail_search",
+      "arguments": {
+        "$search": "invoice payment",
+        "$top": 10
+      }
+    },
+    "id": 4
+  }'
+```
+
+Test file search:
+```bash
+curl -X POST http://localhost:8888 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "name": "microsoft365_files_search",
+      "arguments": {
+        "searchQuery": "*.pdf",
+        "$top": 10
+      }
+    },
+    "id": 5
+  }'
+```
+
+### 6.2 Using an MCP Client
+
+Any MCP-compatible client can connect to `http://localhost:8888` and use the Microsoft 365 tools.
+
+## Step 7: Troubleshooting
+
+### Common Issues and Solutions
+
+#### 7.1 Authentication Errors
+
+**Problem**: "AADSTS7000218: The request body must contain the following parameter: 'client_assertion' or 'client_secret'"
+
+**Solution**: Ensure "Allow public client flows" is enabled in Azure Portal → Authentication → Advanced settings
+
+#### 7.2 Permission Errors
+
+**Problem**: "Insufficient privileges to complete the operation"
+
+**Solutions**:
+1. Verify all required permissions are added in Azure Portal
+2. Grant admin consent if in an organization
+3. Re-authenticate to refresh permissions
+
+#### 7.3 Token Issues
+
+**Problem**: "Token expired" or authentication prompts repeatedly
+
+**Solutions**:
+1. Tokens auto-refresh, but if issues persist:
+   ```bash
+   # Clear token cache (location varies by implementation)
+   rm -rf ~/.mcp_tokens/
+   ```
+2. Re-authenticate using device code flow
+
+#### 7.4 Network Errors
+
+**Problem**: Cannot connect to Microsoft Graph API
+
+**Solutions**:
+1. Check internet connectivity
+2. Verify firewall allows HTTPS to:
+   - `login.microsoftonline.com`
+   - `graph.microsoft.com`
+3. Check proxy settings if behind corporate firewall
+
+**Problem**: Frequent timeout errors or connection resets
+
+**Solutions**:
+1. **Use Connection Control**: Configure problematic endpoints with connection management:
+   ```json
+   {
+     "id": "microsoft365_mail_search",
+     "connection": {
+       "disableKeepAlive": true,
+       "timeout": "45s"
+     }
+   }
+   ```
+
+2. **Monitor Connection Health**: Enable debug logging to see automatic cleanup:
+   ```bash
+   ./mcpfusion -debug
+   ```
+   Look for these log messages:
+   ```
+   [DEBUG] Timeout detected, triggering connection cleanup
+   [DEBUG] Connection error detected, triggering connection cleanup
+   [DEBUG] Cleaned up idle HTTP connections
+   ```
+
+3. **Force Connection Cleanup**: If issues persist, MCPFusion automatically cleans up connections every 5 minutes and after errors. For immediate cleanup, restart the service.
+
+4. **Use Fresh Connections**: For severe cases, configure endpoints to use new connections:
+   ```json
+   {
+     "connection": {
+       "forceNewConnection": true
+     }
+   }
+   ```
+
+**Problem**: "context deadline exceeded" errors
+
+**Solutions**:
+1. Increase timeout for slow endpoints:
+   ```json
+   {
+     "connection": {
+       "timeout": "90s"
+     }
+   }
+   ```
+2. Check Microsoft 365 service status at [Microsoft 365 Status](https://status.office365.com/)
+3. Monitor for throttling responses (HTTP 429) which may indicate rate limiting
+
+#### 7.5 Configuration Issues
+
+**Problem**: "MS365_CLIENT_ID environment variable not found"
+
+**Solutions**:
+1. Verify `/opt/mcpfusion/env` exists and contains the correct variable names
+2. Check file permissions (`chmod 600 /opt/mcpfusion/env`)
+3. Ensure no typos in environment variable names
+4. Restart MCPFusion after changing `/opt/mcpfusion/env`
+
+### Debug Mode
+
+Enable debug logging for troubleshooting:
+```bash
+./mcpfusion -config configs/microsoft365.json -debug
+```
+
+## Step 8: Security Best Practices
+
+### 8.1 Environment Variables
+- Never commit `/opt/mcpfusion/env` or any file containing credentials to version control
+- Restrict file permissions: `chmod 600 /opt/mcpfusion/env`
+- Consider using a secrets management system in production
+
+### 8.2 Permissions
+- Only request permissions you actually need
+- Use least-privilege principle
+- Regular audit of granted permissions
+
+### 8.3 Token Security
+- Tokens are stored in memory by default
+- Consider encrypted storage for production
+- Implement token rotation policies
+
+### 8.4 Network Security
+- Always use HTTPS in production
+- Consider using TLS client certificates
+- Implement rate limiting for API calls
+
+## Step 9: Advanced Configuration
+
+### 9.1 Custom Scopes
+
+Modify `fusion/configs/microsoft365.json` to add custom scopes:
+```json
+"scope": [
+  "https://graph.microsoft.com/User.Read",
+  "https://graph.microsoft.com/Calendars.Read",
+  "https://graph.microsoft.com/Tasks.Read"  // Add new scope
+]
+```
+
+## Additional Resources
+
+- [Microsoft Graph API Documentation](https://docs.microsoft.com/graph/overview)
+- [Azure AD App Registration Guide](https://docs.microsoft.com/azure/active-directory/develop/quickstart-register-app)
+- [OAuth 2.0 Device Code Flow](https://docs.microsoft.com/azure/active-directory/develop/v2-oauth2-device-code)
+- [MCPFusion Documentation](README.md)
+- [Fusion Configuration Guide](fusion/README_CONFIG.md)
+
+## Support
+
+For issues specific to:
+- **MCPFusion**: Open an issue on the GitHub repository
+- **Microsoft 365 APIs**: Check [Microsoft Graph Support](https://docs.microsoft.com/graph/support)
+- **Azure AD**: Visit [Azure Support](https://azure.microsoft.com/support/)
+
+---
+
+Copyright (c) 2025-2026 Tenebris Technologies Inc. See LICENSE for details.
+

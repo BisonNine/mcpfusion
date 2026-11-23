@@ -1,0 +1,1659 @@
+# MCPFusion Configuration Guide
+
+This guide explains how to create JSON configuration files for MCPFusion to integrate with any API. Supported authentication types include OAuth2, Bearer tokens, API keys, Basic auth, and user-provided credentials.
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Configuration Structure](#configuration-structure)
+- [Authentication Types](#authentication-types)
+- [Endpoint Configuration](#endpoint-configuration)
+- [Parameter Configuration](#parameter-configuration)
+- [Response Configuration](#response-configuration)
+- [Advanced Features](#advanced-features)
+- [HTTP Session Management](#http-session-management)
+- [Best Practices](#best-practices)
+- [Complete Examples](#complete-examples)
+- [Troubleshooting](#troubleshooting)
+
+## Overview
+
+MCPFusion uses JSON configuration files to dynamically create MCP (Model Context Protocol) tools from API specifications. Each configuration file defines:
+
+- **Services**: API endpoints grouped by service (e.g., Microsoft 365, Google APIs)
+- **Authentication**: How to authenticate with the API
+- **Endpoints**: Individual API endpoints with parameters and responses
+- **Validation**: Parameter validation rules and constraints
+- **Caching**: Response caching strategies
+- **Retry Logic**: Error handling and retry behavior
+
+## Configuration Structure
+
+### Root Structure
+
+```json
+{
+  "services": {
+    "service_name": {
+      "name": "Human-readable service name",
+      "baseURL": "https://api.example.com/v1",
+      "auth": { /* Authentication configuration */ },
+      "retry": { /* Optional retry configuration */ },
+      "circuitBreaker": { /* Optional circuit breaker configuration */ },
+      "endpoints": [ /* Array of endpoint configurations */ ]
+    }
+  }
+}
+```
+
+### Service Configuration
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Human-readable service name displayed in MCP tools |
+| `baseURL` | string | Yes | Base URL for all API endpoints in this service |
+| `auth` | object | Yes | Authentication configuration |
+| `endpoints` | array | Yes | Array of endpoint configurations |
+| `retry` | object | No | Service-level retry configuration |
+| `circuitBreaker` | object | No | Circuit breaker configuration |
+
+## Authentication Types
+
+### OAuth2 Device Flow
+
+Best for desktop applications and command-line tools:
+
+```json
+{
+  "type": "oauth2_device",
+  "config": {
+    "clientId": "${CLIENT_ID}",
+    "tenantId": "${TENANT_ID}",
+    "scope": "openid profile User.Read Calendars.Read",
+    "authorizationURL": "https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/devicecode",
+    "tokenURL": "https://login.microsoftonline.com/{tenantId}/oauth2/v2.0/token"
+  }
+}
+```
+
+**Environment Variables Required:**
+- `CLIENT_ID`: Your application's client ID
+- `TENANT_ID`: The tenant ID (for Microsoft APIs)
+
+### OAuth2 External
+
+For services where OAuth2 tokens are provided by an external helper (e.g., `fusion-auth`). Use this when the provider doesn't support device flow or restricts its scopes. The strategy uses stored tokens and supports automatic token refresh, but does not initiate any interactive authentication flow — if no token is found, it returns an error directing the user to run `fusion-auth`.
+
+```json
+{
+  "type": "oauth2_external",
+  "config": {
+    "clientId": "${CLIENT_ID}",
+    "clientSecret": "${CLIENT_SECRET}",
+    "scope": "scope1 scope2",
+    "tokenURL": "https://provider.example.com/token"
+  }
+}
+```
+
+**Environment Variables Required:**
+- `CLIENT_ID`: Your application's client ID
+- `CLIENT_SECRET`: Your application's client secret
+
+**Config Fields:**
+- `clientId` (required): OAuth2 client ID
+- `clientSecret` (optional but recommended): OAuth2 client secret, included in token refresh requests
+- `tokenURL` (required): Token endpoint URL for refreshing tokens
+- `scope` (optional): Space-separated OAuth2 scopes, included in refresh requests if set
+
+### Bearer Token
+
+For APIs that use static bearer tokens:
+
+```json
+{
+  "type": "bearer",
+  "config": {
+    "token": "${API_TOKEN}"
+  }
+}
+```
+
+**Environment Variables Required:**
+- `API_TOKEN`: Your API bearer token
+
+### API Key
+
+For APIs that use API keys:
+
+```json
+{
+  "type": "api_key",
+  "config": {
+    "key": "${API_KEY}",
+    "header": "X-API-Key"
+  }
+}
+```
+
+**Environment Variables Required:**
+- `API_KEY`: Your API key
+
+### Basic Authentication
+
+For APIs that use username/password:
+
+```json
+{
+  "type": "basic",
+  "config": {
+    "username": "${API_USERNAME}",
+    "password": "${API_PASSWORD}"
+  }
+}
+```
+
+**Environment Variables Required:**
+- `API_USERNAME`: Username for basic auth
+- `API_PASSWORD`: Password for basic auth
+
+### User Credentials
+
+For APIs where each user provides their own credentials (API keys, tokens, etc.) through the `fusion-auth` CLI. Credentials are stored per-tenant and applied to requests based on field definitions. Unlike other auth types, credentials are not set via environment variables — each user runs `fusion-auth` to provide their own values interactively.
+
+There are two modes:
+
+#### Individual Mode (default)
+
+Each field is applied to the request independently based on its `location` and `paramName`. Use this when the API expects credentials as separate query parameters, headers, or cookies.
+
+```json
+{
+  "type": "user_credentials",
+  "config": {
+    "instructions": "To use this service, you need an API Key and Token.\n\n1. Go to https://example.com/developer to create an app\n2. Copy your API key and generate a token\n3. Enter both values when prompted below",
+    "fields": [
+      {
+        "name": "key",
+        "label": "API Key",
+        "description": "Your API Key from the developer portal",
+        "location": "query",
+        "paramName": "key"
+      },
+      {
+        "name": "token",
+        "label": "API Token",
+        "description": "Your API Token",
+        "location": "query",
+        "paramName": "token"
+      }
+    ]
+  }
+}
+```
+
+In this example, both credentials are sent as query parameters on every request: `?key=xxx&token=yyy`.
+
+#### Basic Auth Mode
+
+When `authMethod` is set to `"basic_auth"`, exactly two fields are combined into a standard HTTP Basic Authentication header: `Authorization: Basic base64(field1:field2)`. The `location` settings on individual fields are ignored.
+
+This is useful for APIs like Jira Cloud that use email + API token with Basic auth.
+
+```json
+{
+  "type": "user_credentials",
+  "config": {
+    "authMethod": "basic_auth",
+    "instructions": "You need your account email and an API token.\n\n1. Go to https://id.atlassian.com/manage-profile/security/api-tokens\n2. Click 'Create API token' and copy it\n3. Enter your email and token when prompted below",
+    "fields": [
+      {
+        "name": "email",
+        "label": "Email",
+        "description": "Your account email address"
+      },
+      {
+        "name": "api_token",
+        "label": "API Token",
+        "description": "Your API token"
+      }
+    ]
+  }
+}
+```
+
+The first field is used as the username and the second as the password in the Basic auth header. For example, with `email="user@example.com"` and `api_token="abc123"`, the resulting header is:
+
+```
+Authorization: Basic dXNlckBleGFtcGxlLmNvbTphYmMxMjM=
+```
+
+#### Config Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `authMethod` | string | No | How credentials are applied: omit for individual mode, `"basic_auth"` to combine two fields as HTTP Basic auth |
+| `instructions` | string | No | Setup instructions shown to the user before running `fusion-auth`. Include steps to obtain credentials. |
+| `fields` | array | Yes | Array of credential field definitions (exactly 2 for `basic_auth` mode) |
+
+#### Field Definition
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Internal field name, used as the key in credential storage |
+| `label` | string | No | Human-readable label shown during `fusion-auth` prompts |
+| `description` | string | No | Description shown during `fusion-auth` prompts |
+| `location` | string | Individual mode only | Where to apply the credential: `query`, `header`, or `cookie`. Ignored in `basic_auth` mode. |
+| `paramName` | string | No | The actual parameter name used in the request. Defaults to `name` if omitted. |
+
+#### How It Works
+
+1. When an API call fails due to missing credentials, the LLM calls the `<service>_auth_setup` tool
+2. The tool returns setup instructions (from `instructions` config) and a time-limited `fusion-auth` command
+3. The user runs `fusion-auth <code>`, which prompts for each field value and stores them on the server
+4. Subsequent API requests automatically apply the stored credentials to outgoing requests
+
+**Security Note:** Credentials sent as query parameters (individual mode) may be logged by proxies or intermediate servers. This is determined by the target API's design, not MCPFusion. When possible, prefer `basic_auth` mode or header-based credentials.
+
+### Session JWT
+
+For APIs where a login request (username and password, or similar) returns a token that is then sent on every request. MCPFusion performs the login, extracts the token from the response, applies it as a header, cookie or query parameter, and re-authenticates when the token expires or the API returns a status listed in `tokenInvalidation.statusCodes`.
+
+```json
+{
+  "type": "session_jwt",
+  "config": {
+    "loginURL": "/api/users/token",
+    "loginMethod": "POST",
+    "loginContentType": "application/json",
+    "loginBody": { "username": "${SERVICE_USERNAME}", "password": "${SERVICE_PASSWORD}" },
+    "tokenPath": "datas.token",
+    "tokenType": "Bearer",
+    "tokenLocation": "header",
+    "headerName": "Authorization",
+    "headerFormat": "Bearer {token}",
+    "expiresIn": 3600
+  },
+  "tokenInvalidation": { "statusCodes": [401], "retryOnInvalidation": true }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `loginURL` | string | Yes | Login endpoint. Relative to the service `baseURL` unless absolute. |
+| `loginMethod` | string | No | HTTP method, default `POST`. |
+| `loginContentType` | string | No | Content type of the login body, default `application/json`. |
+| `loginBody` | object | No | JSON body sent to the login endpoint. |
+| `loginFormBody` | object | No | Form-encoded body, used instead of `loginBody`. |
+| `loginHeaders` | object | No | Extra headers on the login request; values must be strings. |
+| `tokenPath` | string | Yes | Dot path to the token in the login response. |
+| `tokenType` | string | No | Token type used in `{tokenType}`, default `Bearer`. |
+| `tokenLocation` | string | Yes | `header`, `cookie` or `query`. |
+| `headerName` / `headerFormat` | string | No | For `header`: header name (default `Authorization`) and format (default `{tokenType} {token}`). |
+| `cookieName` / `cookieFormat` | string | cookie only | Cookie name and format. |
+| `queryParam` | string | query only | Query parameter name. |
+| `expiresIn` | number | No | Token lifetime in seconds. |
+| `expiresInPath` | string | No | Dot path to a lifetime in seconds in the login response; overrides `expiresIn`. |
+| `refreshURL`, `refreshMethod`, `refreshTokenPath`, `refreshTokenLocation`, `refreshTokenCookieName` | | No | Optional refresh endpoint; see `configs/pwndoc.json` for an example. |
+| `credentials` | object | No | Per-user credentials; see below. |
+
+#### Per-User Credentials
+
+By default the login body comes from environment variables, so every MCPFusion tenant shares one upstream identity. Add a `credentials` block to make each tenant log in as themselves. The block declares the values `fusion-auth` prompts for, and the login template references them with `{{credentials.<name>}}` placeholders in `loginURL`, `loginHeaders`, `loginBody` or `loginFormBody`.
+
+```json
+{
+  "type": "session_jwt",
+  "config": {
+    "loginURL": "/api/v1/login",
+    "loginBody": { "username": "{{credentials.username}}", "password": "{{credentials.password}}" },
+    "tokenPath": "access_token",
+    "tokenLocation": "header",
+    "headerFormat": "Bearer {token}",
+    "expiresIn": 3600,
+    "credentials": {
+      "store": "credentials",
+      "instructions": "Enter the username and password you use with the service's CLI.",
+      "fields": [
+        { "name": "username", "label": "Username" },
+        { "name": "password", "label": "Password", "secret": true }
+      ]
+    }
+  },
+  "tokenInvalidation": { "statusCodes": [401], "retryOnInvalidation": true }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `store` | string | No | `credentials` (default) or `token`; see below. |
+| `instructions` | string | No | Shown by `fusion-auth` before prompting. |
+| `fields` | array | Yes | Values to prompt for. Each has `name` (required), `label`, `description` and `secret` (boolean; input is not echoed). Every placeholder must name a declared field, and at least one placeholder must be used. |
+
+**Storage modes:**
+
+| `store` | What is kept per tenant | On expiry or invalidation | Use when |
+|---|---|---|---|
+| `credentials` | The prompted values. | MCPFusion logs in again automatically. | The API only issues short-lived tokens. |
+| `token` | Only the token from a login performed once when the values are submitted; the values are discarded. | MCPFusion refreshes if a refresh endpoint is configured, otherwise the user is asked to run `fusion-auth` again. | The API can issue a long-lived token at login and passwords must not be stored. |
+
+**How it works:**
+
+1. A tool call for a tenant with nothing stored fails with a message naming the `<service>_auth_setup` tool.
+2. That tool returns a time-limited `fusion-auth` command. The user runs it and is prompted for each field; `secret` fields are not echoed.
+3. `fusion-auth` posts the values to MCPFusion. In `credentials` mode they are stored for the tenant and any earlier token is discarded. In `token` mode MCPFusion logs in immediately, stores the token, discards the values, and reports a login failure at the prompt.
+4. Tool calls use the tenant's token. When it expires or the API returns an invalidation status, `credentials` mode logs in again with the stored values; `token` mode falls back to step 1.
+
+Placeholders use `{{...}}` so the `${ENV}` expansion applied at config load leaves them alone. Credential values are substituted into a copy of the template for the login request only; they are never written to the token record or to logs. In `credentials` mode the values are stored in MCPFusion's database alongside OAuth refresh tokens and have the same protection.
+
+## Endpoint Configuration
+
+### Basic Endpoint Structure
+
+```json
+{
+  "id": "unique_endpoint_id",
+  "name": "Human Readable Name",
+  "description": "Description shown to LLM",
+  "method": "GET",
+  "path": "/api/resource",
+  "baseURL": "https://alternative-api.example.com",
+  "parameters": [ /* Parameter definitions */ ],
+  "response": { /* Response configuration */ },
+  "retry": { /* Optional endpoint-specific retry */ }
+}
+```
+
+### Endpoint Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | Yes | Unique identifier within service |
+| `name` | string | Yes | Human-readable name |
+| `description` | string | Yes | Description shown to LLM |
+| `method` | string | Yes | HTTP method (GET, POST, PUT, DELETE, PATCH) |
+| `path` | string | Yes | API path (may include {placeholders}) |
+| `baseURL` | string | No | Overrides the service-level `baseURL` for this endpoint. Useful when a service spans multiple API hosts (e.g., Google APIs use `www.googleapis.com` for most services but `people.googleapis.com` for contacts). |
+| `parameters` | array | No | Array of parameter definitions |
+| `requestBody` | object | No | Request body encoding configuration (see [Request Body Encoding](#request-body-encoding)) |
+| `response` | object | No | Response handling configuration |
+| `retry` | object | No | Endpoint-specific retry override |
+
+### Path Parameters
+
+Use curly braces for path placeholders:
+
+```json
+{
+  "path": "/users/{userId}/posts/{postId}",
+  "parameters": [
+    {
+      "name": "userId",
+      "location": "path",
+      "required": true,
+      "type": "string"
+    },
+    {
+      "name": "postId", 
+      "location": "path",
+      "required": true,
+      "type": "string"
+    }
+  ]
+}
+```
+
+## Parameter Configuration
+
+### Parameter Structure
+
+```json
+{
+  "name": "parameter_name",
+  "description": "Parameter description for LLM",
+  "type": "string",
+  "required": true,
+  "location": "query",
+  "default": "default_value",
+  "examples": ["example1", "example2"],
+  "validation": { /* Validation rules */ },
+  "transform": { /* Parameter transformation */ }
+}
+```
+
+### Parameter Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Actual API parameter name (can include special characters) |
+| `alias` | string | No | **MCP-compliant alias name** (overrides auto-sanitization) |
+| `description` | string | Yes | Description shown to LLM |
+| `type` | string | Yes | Parameter type (see types below) |
+| `required` | boolean | Yes | Whether parameter is required |
+| `location` | string | Yes | Where parameter goes (see locations below) |
+| `default` | any | No | Default value if not provided |
+| `examples` | array | No | Example values for LLM |
+| `validation` | object | No | Validation rules |
+| `transform` | object | No | Parameter transformation rules (rename/reshape, see [Parameter Transformation](#parameter-transformation)) |
+| `transforms` | array | No | Pre-send value transforms applied in order (see [Pre-Send Transforms](#pre-send-transforms)) |
+| `quoted` | boolean | No | Whether to quote the parameter value |
+| `static` | boolean | No | **Static parameter** - not exposed to MCP, always uses default value |
+
+### ⚠️ **MCP Parameter Naming Requirements**
+
+**MCP Specification**: Parameter names must match `^[a-zA-Z0-9_.-]{1,64}$`
+- ✅ **Valid**: `select`, `user_id`, `api-key`, `filter.name`
+- ❌ **Invalid**: `$select`, `user id`, `@param`, `100%complete`
+
+**Solution Options**:
+1. **Use `alias` field** (recommended): Provides explicit control
+2. **Auto-sanitization**: System removes invalid characters (logs warning)
+
+**Configuration Examples**:
+```json
+// Option 1: Explicit alias (recommended)
+{
+  "name": "$select",
+  "alias": "select", 
+  "description": "OData select fields",
+  "type": "string"
+}
+
+// Option 2: Auto-sanitization (will sanitize $filter → filter)
+{
+  "name": "$filter",
+  "description": "OData filter expression", 
+  "type": "string"
+}
+```
+
+**System Behavior**:
+- **With alias**: Uses alias name for MCP, logs INFO message
+- **Without alias**: Auto-sanitizes name, logs WARNING to add explicit alias
+- **API calls**: Always uses original `name` value for actual API requests
+- **Conflicts**: System validates no two parameters map to same MCP name |
+
+### Parameter Types
+
+| Type | Description | MCP Schema |
+|------|-------------|------------|
+| `string` | Text values | `type: string` |
+| `number` | Numeric values (int/float) | `type: number` |
+| `boolean` | True/false values | `type: boolean` |
+| `array` | Array of values | `type: array` |
+| `object` | JSON objects | `type: object` |
+
+### Parameter Locations
+
+| Location | Description | Usage |
+|----------|-------------|-------|
+| `path` | URL path segment | `/users/{id}` |
+| `query` | Query string parameter | `?name=value` |
+| `header` | HTTP header | `X-Custom-Header: value` |
+| `body` | Request body field | JSON body for POST/PUT |
+
+### Validation Rules
+
+```json
+{
+  "validation": {
+    "pattern": "^\\d{8}$",
+    "minLength": 1,
+    "maxLength": 100,
+    "minimum": 0.0,
+    "maximum": 1000.0,
+    "enum": ["option1", "option2", "option3"],
+    "format": "email"
+  }
+}
+```
+
+**Validation Fields:**
+- `pattern`: Regular expression for string validation
+- `minLength`/`maxLength`: String length constraints
+- `minimum`/`maximum`: Numeric range constraints  
+- `enum`: List of valid values
+- `format`: Format hint (email, date, uri, etc.)
+
+### Static Parameters
+
+Static parameters are fixed values that are not exposed to MCP clients. They are always sent with their default value and cannot be overridden by users. This is useful for:
+- API keys or client IDs that should be fixed per deployment
+- API version parameters that should remain constant
+- Service-specific configuration values
+
+**Configuration Example:**
+```json
+{
+  "parameters": [
+    {
+      "name": "client_id",
+      "description": "Application client ID",
+      "type": "string",
+      "required": false,
+      "location": "query",
+      "default": "${CLIENT_ID}",
+      "static": true  // This parameter is not exposed to MCP
+    },
+    {
+      "name": "api_version",
+      "description": "API version",
+      "type": "string", 
+      "required": false,
+      "location": "header",
+      "default": "v2.0",
+      "static": true  // Always uses "v2.0"
+    }
+  ]
+}
+```
+
+**Important Notes:**
+- Static parameters **MUST** have a `default` value
+- They are not visible in the MCP tool schema
+- Users cannot provide or override these values
+- Combine with environment variables for deployment-specific fixed values
+- Set `required: false` since the value comes from the default
+
+### Parameter Transformation
+
+Transform parameter values before sending to API:
+
+```json
+{
+  "transform": {
+    "targetName": "actual_api_parameter_name",
+    "expression": "transformation_rule"
+  }
+}
+```
+
+**Built-in Transformations:**
+- `toString`: Convert to string
+- `toInt`: Convert to integer
+- `toFloat`: Convert to float
+- `toLowerCase`: Convert to lowercase
+- `toUpperCase`: Convert to uppercase
+- `trim`: Remove whitespace
+
+**Date Transformation Example:**
+```json
+{
+  "name": "startDate",
+  "type": "string",
+  "validation": {
+    "pattern": "^\\d{8}$"
+  },
+  "transform": {
+    "targetName": "startDateTime",
+    "expression": "concat(slice(0,4), '-', slice(4,6), '-', slice(6,8), 'T00:00:00Z')"
+  }
+}
+```
+
+### Pre-Send Transforms
+
+The `transforms` field is an array of named transform strings applied to a parameter's value after type coercion and before validation. Transforms are applied in order and are distinct from the `transform` field (which reshapes parameter names and structure).
+
+```json
+{
+  "name": "content",
+  "type": "string",
+  "transforms": ["html_compact"]
+}
+```
+
+**Supported transforms:**
+
+#### `html_compact`
+
+Applies to: `string` parameters.
+
+Strips whitespace-only text nodes between HTML tags by replacing any sequence of `>`, optional horizontal whitespace, at least one newline, optional further whitespace, and `<` with `><`. This prevents crashes in HTML-to-OOXML converters (such as PwnDoc's `html2ooxml.js` SAX parser) that cannot handle inter-element text nodes.
+
+Content inside `<pre><code>` blocks is preserved because those newlines appear between text characters and tag boundaries, not between two tag boundaries.
+
+```json
+{
+  "name": "description",
+  "type": "string",
+  "location": "body",
+  "transforms": ["html_compact"]
+}
+```
+
+#### `html_compact_fields:field1,field2,...`
+
+Applies to: `array` parameters with `"items": "object"`.
+
+Like `html_compact`, but operates on specific string fields within each object element of an array. The transform name includes the field list as a colon-separated suffix. Field names are top-level keys within each array element.
+
+Use this when an array parameter contains objects that each have HTML string fields. For example, a vulnerability `details` array where each element has `description`, `observation`, and `remediation` HTML fields:
+
+```json
+{
+  "name": "details",
+  "type": "array",
+  "items": "object",
+  "transforms": ["html_compact_fields:description,observation,remediation"]
+}
+```
+
+#### `validate_object_fields:field1,field2,...`
+
+Applies to: `array` parameters with `"items": "object"`.
+
+Validates that each object element in the array contains the specified fields, using dot-notation for nested fields. Returns an error (rejecting the request) if any element is missing a required field or has an empty string value. Supports two-level dot paths such as `customField._id`.
+
+Use this to enforce structural constraints on array-of-object parameters where the API requires fully embedded objects rather than reference IDs.
+
+```json
+{
+  "name": "customFields",
+  "type": "array",
+  "items": "object",
+  "transforms": ["validate_object_fields:customField._id,customField.label"]
+}
+```
+
+If validation fails, the request is rejected before it reaches the API with a descriptive error indicating which element and field failed.
+
+**Note:** `transforms` (plural) is always an array. Multiple transforms are applied in order:
+
+```json
+"transforms": ["validate_object_fields:customField._id,customField.label"]
+```
+
+## Response Configuration
+
+### Basic Response Configuration
+
+```json
+{
+  "response": {
+    "type": "json",
+    "transform": "$.data",
+    "paginated": true,
+    "paginationConfig": {
+      "nextPageTokenPath": "@odata.nextLink",
+      "dataPath": "value",
+      "pageSize": 50
+    },
+    "caching": {
+      "enabled": true,
+      "ttl": "10m",
+      "key": "custom-cache-key-{param1}"
+    }
+  }
+}
+```
+
+### Response Types
+
+| Type | Description |
+|------|-------------|
+| `json` | JSON response (default) |
+| `text` | Plain text response |
+| `binary` | Binary data response — saved to disk when `MCP_FUSION_DL_DIR` is configured |
+
+#### Binary Response Handling
+
+When `response_type` is `"binary"` and the `MCP_FUSION_DL_DIR` environment variable is set, MCPFusion saves the binary content to disk rather than returning it inline. This is essential for large files such as generated reports, exported documents, and archives.
+
+**Filename resolution** (in priority order):
+
+1. `Content-Disposition` response header — e.g. `Content-Disposition: attachment; filename="Report.docx"` → base name `Report.docx`
+2. `Content-Type` response header — e.g. `application/pdf` → `download.pdf`
+3. Fallback → `download.bin`
+
+**Tenant isolation**: Files are saved under `<MCP_FUSION_DL_DIR>/<tenantShortHash>/`, keeping each tenant's files separate.
+
+**Collision-safe naming**: A `_<timestamp>_<4hex>` suffix is always appended to prevent overwrites (e.g. `Report_20260312_023106_5b3e.docx`).
+
+**Tool response**: The tool result contains the saved file path and byte count, for example:
+```
+Report_20260312_023106_5b3e.docx (291369 bytes) saved to /opt/mcpfusion/downloads/fc566cff.../Report_20260312_023106_5b3e.docx
+```
+
+If `MCP_FUSION_DL_DIR` is not set, binary responses are returned as a base64-encoded string in the tool result.
+
+### Pagination Configuration
+
+For APIs that return paginated results:
+
+```json
+{
+  "paginated": true,
+  "paginationConfig": {
+    "nextPageTokenPath": "@odata.nextLink",
+    "dataPath": "value", 
+    "pageSize": 50
+  }
+}
+```
+
+**Pagination Fields:**
+- `nextPageTokenPath`: JSON path to next page URL/token
+- `dataPath`: JSON path to array of items
+- `pageSize`: Items per page (for metrics)
+
+### Caching Configuration
+
+```json
+{
+  "caching": {
+    "enabled": true,
+    "ttl": "10m",
+    "key": "service:endpoint:{param1}:{param2}"
+  }
+}
+```
+
+**Caching Fields:**
+- `enabled`: Whether to cache responses
+- `ttl`: Time-to-live (e.g., "5m", "1h", "30s")
+- `key`: Custom cache key template (optional)
+
+## Advanced Features
+
+### Retry Configuration
+
+Service-level or endpoint-level retry configuration:
+
+```json
+{
+  "retry": {
+    "enabled": true,
+    "maxAttempts": 3,
+    "strategy": "exponential",
+    "baseDelay": "1s",
+    "maxDelay": "30s",
+    "jitter": true,
+    "backoffFactor": 2.0,
+    "retryableErrors": ["network_error", "timeout", "server_error", "rate_limited"]
+  }
+}
+```
+
+### Circuit Breaker Configuration
+
+Protect against cascading failures:
+
+```json
+{
+  "circuitBreaker": {
+    "enabled": true,
+    "failureThreshold": 5,
+    "successThreshold": 3,
+    "timeout": "30s",
+    "halfOpenMaxCalls": 3,
+    "resetTimeout": "60s"
+  }
+}
+```
+
+### Request Body Encoding
+
+Some APIs require request body parameters to be encoded in a specific format rather than sent as flat JSON fields. The `requestBody` configuration enables automatic encoding of body parameters before sending.
+
+#### How It Works
+
+When `requestBody` is set on an endpoint:
+
+1. Body parameters **with** a `transform.targetName` bypass encoding and are placed directly in the JSON body (e.g., `messageId` → `message.threadId`)
+2. Body parameters **without** a `targetName` are collected, passed through the named encoder, and the encoded result is placed at `wrapperPath`
+
+This partitioning allows mixing encoded content with structured JSON fields in the same request body.
+
+#### Configuration
+
+```json
+{
+  "requestBody": {
+    "encoding": "rfc2822_base64url",
+    "wrapperPath": "message.raw"
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `encoding` | string | Yes | Name of the registered encoder |
+| `wrapperPath` | string | Yes | Dot-notation path where the encoded value is placed in the JSON body |
+
+#### Available Encodings
+
+| Name | Description | Use Case |
+|------|-------------|----------|
+| `rfc2822_base64url` | Assembles an RFC 2822 MIME message from `to`, `cc`, `bcc`, `subject`, `body` parameters and base64url-encodes it (no padding) | Gmail API drafts and messages |
+
+#### Example: Gmail Draft Create
+
+```json
+{
+  "id": "gmail_draft_create",
+  "method": "POST",
+  "path": "/gmail/v1/users/me/drafts",
+  "parameters": [
+    {"name": "to", "type": "string", "required": true, "location": "body"},
+    {"name": "subject", "type": "string", "required": true, "location": "body"},
+    {"name": "body", "type": "string", "required": true, "location": "body"}
+  ],
+  "requestBody": {
+    "encoding": "rfc2822_base64url",
+    "wrapperPath": "message.raw"
+  }
+}
+```
+
+This produces the request body `{"message": {"raw": "<base64url-encoded-RFC2822>"}}` as required by the Gmail API.
+
+#### Example: Gmail Draft Reply (Mixed Parameters)
+
+```json
+{
+  "id": "gmail_draft_reply",
+  "method": "POST",
+  "path": "/gmail/v1/users/me/drafts",
+  "parameters": [
+    {
+      "name": "messageId",
+      "type": "string",
+      "required": true,
+      "location": "body",
+      "transform": {"targetName": "message.threadId", "expression": "."}
+    },
+    {"name": "to", "type": "string", "required": true, "location": "body"},
+    {"name": "subject", "type": "string", "required": true, "location": "body"},
+    {"name": "body", "type": "string", "required": true, "location": "body"}
+  ],
+  "requestBody": {
+    "encoding": "rfc2822_base64url",
+    "wrapperPath": "message.raw"
+  }
+}
+```
+
+This produces `{"message": {"threadId": "abc123", "raw": "<base64url-encoded-RFC2822>"}}` — the `messageId` bypasses encoding (it has a `targetName`), while `to`, `subject`, and `body` are encoded into the RFC 2822 message.
+
+## Destructive Tool Safety Gate
+
+MCPFusion includes a safety mechanism for destructive tools (those that delete data or perform irreversible operations). By default, destructive tools are **registered and visible** to the LLM but **return an error when called**, allowing the LLM to inform the user about the capability and how to enable it.
+
+### How It Works
+
+- All tools are always registered, including destructive ones
+- When a destructive tool is called and the gate is not enabled, it returns an informative error
+- The LLM can see the tool, explain what it does, and tell the user how to enable it
+- This is safer than hiding tools entirely, which would prevent the LLM from knowing the capability exists
+
+### Enabling Destructive Tools
+
+Set the `MCP_FUSION_ALLOW_DESTRUCTIVE` environment variable:
+
+```bash
+MCP_FUSION_ALLOW_DESTRUCTIVE=true ./mcpfusion
+```
+
+Accepted values (case-insensitive): `true`, `yes`, `1`. Any other value or absence of the variable means disabled (the default).
+
+### How Tools Are Classified as Destructive
+
+1. **Automatic (from HTTP method)**: Any endpoint using the `DELETE` method is automatically classified as destructive via `hints.destructive = true`
+2. **Explicit (from config)**: You can explicitly mark any endpoint as destructive using the `hints` field in endpoint configuration, regardless of HTTP method
+
+**Example: Explicitly marking a non-DELETE tool as destructive:**
+
+```json
+{
+  "id": "purge_cache",
+  "name": "Purge Cache",
+  "description": "Purge all cached data. This cannot be undone.",
+  "method": "POST",
+  "path": "/admin/cache/purge",
+  "hints": {
+    "destructive": true
+  },
+  "parameters": [],
+  "response": { "type": "json" }
+}
+```
+
+### Currently Affected Tools
+
+| Config | Tool | Endpoint |
+|--------|------|----------|
+| Google | `google_gmail_draft_delete` | `DELETE /gmail/v1/users/me/drafts/{draftId}` |
+| Google | `google_drive_file_delete` | `DELETE /drive/v3/files/{fileId}` |
+| Google | `google_calendar_event_delete` | `DELETE /calendar/v3/calendars/primary/events/{eventId}` |
+| M365 | `microsoft365_mail_draft_delete` | `DELETE /me/messages/{id}` |
+| M365 | `microsoft365_calendar_event_delete` | `DELETE /me/events/{id}` |
+
+## HTTP Session Management
+
+MCPFusion includes advanced HTTP session management to handle connection timeouts and improve reliability with external APIs. This is particularly useful for APIs that may have intermittent connectivity issues or strict connection limits.
+
+### Connection Configuration
+
+You can configure connection behavior at the endpoint level to handle problematic APIs:
+
+```json
+{
+  "id": "microsoft365_mail_search",
+  "name": "Search emails in Microsoft 365",
+  "method": "GET",
+  "path": "/me/messages",
+  "connection": {
+    "disableKeepAlive": true,
+    "forceNewConnection": false,
+    "timeout": "45s"
+  },
+  "parameters": [...]
+}
+```
+
+### Connection Options
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `disableKeepAlive` | boolean | false | Forces connection closure after each request (adds `Connection: close` header) |
+| `forceNewConnection` | boolean | false | Creates a new connection for each request, bypassing connection pool |
+| `timeout` | string | "60s" | Custom timeout for this specific endpoint (format: "30s", "2m", etc.) |
+
+### Default Transport Settings
+
+MCPFusion uses optimized HTTP transport settings:
+
+- **Connection Limits**: 100 total idle connections, 10 per host, 50 max per host
+- **Timeouts**: 30s idle timeout, 10s connection establishment, 60s overall request timeout
+- **Keep-Alive**: 30s probe interval with automatic health validation
+- **Automatic Cleanup**: Periodic cleanup of idle connections every 5 minutes
+
+### When to Use Connection Control
+
+**Use `disableKeepAlive: true` when:**
+- API servers close connections unpredictably
+- You experience frequent timeout errors
+- The API has strict connection limits
+
+**Use `forceNewConnection: true` when:**
+- Connection reuse causes authentication issues
+- API requires fresh connections for each request
+- Debugging connection-related problems
+
+**Use custom `timeout` when:**
+- Endpoint typically takes longer than 60s to respond
+- API has known slow response times
+- Need tighter timeout control for specific operations
+
+### Example: Microsoft 365 Configuration
+
+```json
+{
+  "id": "microsoft365_mail_search",
+  "name": "Search Microsoft 365 emails",
+  "method": "GET",
+  "path": "/me/messages",
+  "connection": {
+    "disableKeepAlive": true,
+    "timeout": "45s"
+  },
+  "parameters": [
+    {
+      "name": "$filter",
+      "alias": "filter",
+      "description": "OData filter expression",
+      "type": "string",
+      "required": false,
+      "location": "query"
+    }
+  ]
+}
+```
+
+### Monitoring Connection Health
+
+MCPFusion automatically logs connection management activities:
+
+```
+[DEBUG] Timeout detected, triggering connection cleanup [correlation-id]
+[DEBUG] Connection error detected, triggering connection cleanup [correlation-id]
+[DEBUG] Cleaned up idle HTTP connections
+```
+
+Monitor these logs to identify endpoints that may benefit from connection configuration.
+
+## Best Practices
+
+### 1. Environment Variables
+
+**Always use environment variables for secrets:**
+
+```json
+{
+  "auth": {
+    "type": "oauth2_device",
+    "config": {
+      "clientId": "${CLIENT_ID}",
+      "clientSecret": "${CLIENT_SECRET}"
+    }
+  }
+}
+```
+
+**Set environment variables in `/opt/mcpfusion/env`:**
+```bash
+CLIENT_ID=your-client-id
+CLIENT_SECRET=your-client-secret
+API_BASE_URL=https://api.example.com
+```
+
+### 2. Parameter Design
+
+**Provide sensible defaults:**
+```json
+{
+  "name": "$top",
+  "type": "number",
+  "default": 25,
+  "validation": {
+    "enum": [5, 10, 25, 50, 100, 250, 500, 1000]
+  }
+}
+```
+
+**Use descriptive names and descriptions:**
+```json
+{
+  "name": "startDate",
+  "description": "Start date in YYYYMMDD format",
+  "validation": {
+    "pattern": "^\\d{8}$"
+  }
+}
+```
+
+### 3. Caching Strategy
+
+**Cache stable data longer:**
+```json
+{
+  "caching": {
+    "enabled": true,
+    "ttl": "1h"  // User profiles change infrequently
+  }
+}
+```
+
+**Cache dynamic data briefly:**
+```json
+{
+  "caching": {
+    "enabled": true,
+    "ttl": "2m"  // Messages change frequently
+  }
+}
+```
+
+### 4. Error Handling
+
+**Configure appropriate retry for different endpoints:**
+```json
+{
+  "retry": {
+    "enabled": true,
+    "maxAttempts": 5,     // More retries for critical operations
+    "strategy": "exponential"
+  }
+}
+```
+
+### 5. Tool Naming
+
+**Use consistent naming patterns:**
+- `service_resource_action`: `microsoft365_calendar_read_summary`
+- `service_resource_action_modifier`: `microsoft365_mail_folder_messages`
+
+### **Parameter Naming Best Practices**
+
+#### **Rule 1: Always Use Aliases for Special Characters**
+
+When your API uses parameters that violate MCP naming rules, always add explicit aliases:
+
+```json
+// ❌ Bad: Will auto-sanitize with warnings
+{
+  "name": "$select",
+  "description": "OData select fields",
+  "type": "string"
+}
+
+// ✅ Good: Explicit alias with clear intent
+{
+  "name": "$select", 
+  "alias": "select",
+  "description": "OData select fields (comma-separated)",
+  "type": "string",
+  "examples": ["displayName,mail", "id,displayName,mail,userPrincipalName"]
+}
+```
+
+#### **Rule 2: Choose Meaningful Alias Names**
+
+Use descriptive, LLM-friendly alias names:
+
+```json
+// ❌ Poor: Ambiguous alias
+{
+  "name": "$top",
+  "alias": "t",
+  "type": "number"
+}
+
+// ✅ Good: Clear, descriptive alias  
+{
+  "name": "$top",
+  "alias": "limit",
+  "description": "Maximum number of items to return",
+  "type": "number",
+  "default": 10,
+  "examples": [10, 25, 50, 100]
+}
+```
+
+#### **Rule 3: Handle Common API Patterns**
+
+**Microsoft Graph / OData APIs:**
+```json
+{
+  "name": "$select", "alias": "select",
+  "name": "$filter", "alias": "filter", 
+  "name": "$orderby", "alias": "orderby",
+  "name": "$top", "alias": "limit",
+  "name": "$skip", "alias": "offset",
+  "name": "$expand", "alias": "expand",
+  "name": "$search", "alias": "search",
+  "name": "$count", "alias": "include_count"
+}
+```
+
+**APIs with Spaces:**
+```json
+{
+  "name": "user name", 
+  "alias": "user_name",
+  "name": "file size",
+  "alias": "file_size"
+}
+```
+
+**APIs with Special Characters:**
+```json
+{
+  "name": "query[filters]",
+  "alias": "filters",
+  "name": "@timestamp", 
+  "alias": "timestamp",
+  "name": "100%complete",
+  "alias": "completion_percent"
+}
+```
+
+#### **Rule 4: Add Rich Descriptions and Examples**
+
+Make your parameters LLM-friendly with enhanced descriptions:
+
+```json
+{
+  "name": "$filter",
+  "alias": "filter", 
+  "description": "OData filter expression to narrow results. Supports eq, ne, gt, lt, ge, le, and, or, not operators. Common patterns: startswith(field,'value'), contains(field,'value'), field eq 'value'",
+  "type": "string",
+  "required": false,
+  "location": "query",
+  "examples": [
+    "startswith(displayName,'John')",
+    "mail eq 'user@example.com'", 
+    "createdDateTime ge 2024-01-01T00:00:00Z",
+    "startswith(displayName,'A') and department eq 'Engineering'"
+  ]
+}
+```
+
+#### **Rule 5: Validate No Conflicts**
+
+Ensure no two parameters map to the same MCP name:
+
+```json
+// ❌ Bad: Both map to "filter"
+[
+  {"name": "$filter", "alias": "filter"},
+  {"name": "search_filter", "alias": "filter"}  // CONFLICT!
+]
+
+// ✅ Good: Unique aliases
+[
+  {"name": "$filter", "alias": "odata_filter"},
+  {"name": "search_filter", "alias": "search_filter"}
+]
+```
+
+#### **System Behavior Summary**
+
+| Scenario | MCP Name | Log Level | Recommendation |
+|----------|----------|-----------|----------------|
+| `{"name": "validParam"}` | `validParam` | None | ✅ No action needed |
+| `{"name": "$select", "alias": "select"}` | `select` | INFO | ✅ Best practice |
+| `{"name": "$filter"}` | `filter` | WARNING | ⚠️ Add explicit alias |
+| `{"name": "$select"}, {"name": "select"}` | Conflict! | ERROR | ❌ Fix naming conflict |
+
+#### **LLM Guidance Template**
+
+When creating configurations, include this guidance for LLMs:
+
+```json
+{
+  "// IMPORTANT": "Parameter names must match ^[a-zA-Z0-9_.-]{1,64}$",
+  "// RULE 1": "If API parameter contains $, @, %, spaces, or special chars, add 'alias' field",
+  "// RULE 2": "Choose descriptive alias names (e.g., $top -> limit, $filter -> filter)",  
+  "// RULE 3": "Always include examples and detailed descriptions",
+  "// RULE 4": "Verify no two parameters map to same alias name"
+}
+```
+
+## Complete Examples
+
+### API with Static Parameters
+
+This example shows how to use static parameters for fixed API configuration:
+
+```json
+{
+  "services": {
+    "enterprise_api": {
+      "name": "Enterprise API Service",
+      "baseURL": "https://api.enterprise.com",
+      "auth": {
+        "type": "oauth2_device",
+        "config": {
+          "clientId": "${CLIENT_ID}",
+          "scope": "read write",
+          "authorizationURL": "https://auth.enterprise.com/device",
+          "tokenURL": "https://auth.enterprise.com/token"
+        }
+      },
+      "endpoints": [
+        {
+          "id": "data_query",
+          "name": "Query Data",
+          "description": "Query enterprise data with fixed client context",
+          "method": "POST",
+          "path": "/api/query",
+          "parameters": [
+            {
+              "name": "client_id",
+              "description": "Client application ID",
+              "type": "string",
+              "required": false,
+              "location": "header",
+              "default": "${APP_CLIENT_ID}",
+              "static": true  // Fixed per deployment
+            },
+            {
+              "name": "api_version",
+              "description": "API version",
+              "type": "string",
+              "required": false,
+              "location": "header",
+              "default": "2024-01-01",
+              "static": true  // Fixed version
+            },
+            {
+              "name": "tenant_id",
+              "description": "Tenant identifier",
+              "type": "string",
+              "required": false,
+              "location": "query",
+              "default": "${TENANT_ID}",
+              "static": true  // Fixed per deployment
+            },
+            {
+              "name": "query",
+              "description": "The query to execute",
+              "type": "string",
+              "required": true,
+              "location": "body"  // User-provided parameter
+            },
+            {
+              "name": "limit",
+              "description": "Maximum results to return",
+              "type": "number",
+              "required": false,
+              "location": "query",
+              "default": 100  // User can override this
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
+```
+
+In this example:
+- `client_id`, `api_version`, and `tenant_id` are static parameters that are always sent with fixed values
+- These static parameters are not exposed in the MCP tool interface
+- `query` and `limit` are regular parameters that users can provide
+- Static parameters use environment variables for deployment-specific configuration
+
+### Simple REST API with Bearer Token
+
+```json
+{
+  "services": {
+    "jsonplaceholder": {
+      "name": "JSONPlaceholder API",
+      "baseURL": "https://jsonplaceholder.typicode.com",
+      "auth": {
+        "type": "bearer",
+        "config": {
+          "token": "${API_TOKEN}"
+        }
+      },
+      "endpoints": [
+        {
+          "id": "posts_list",
+          "name": "List Posts",
+          "description": "Get all posts",
+          "method": "GET",
+          "path": "/posts",
+          "parameters": [
+            {
+              "name": "$top",
+              "description": "Number of posts to retrieve",
+              "type": "number",
+              "required": false,
+              "location": "query",
+              "default": 10,
+              "validation": {
+                "minimum": 1,
+                "maximum": 100
+              }
+            }
+          ],
+          "response": {
+            "type": "json",
+            "caching": {
+              "enabled": true,
+              "ttl": "5m"
+            }
+          }
+        },
+        {
+          "id": "posts_read",
+          "name": "Read Post",
+          "description": "Get a specific post by ID",
+          "method": "GET", 
+          "path": "/posts/{id}",
+          "parameters": [
+            {
+              "name": "id",
+              "description": "Post ID to retrieve",
+              "type": "number",
+              "required": true,
+              "location": "path"
+            }
+          ],
+          "response": {
+            "type": "json",
+            "caching": {
+              "enabled": true,
+              "ttl": "10m"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+### OAuth2 API with Pagination
+
+```json
+{
+  "services": {
+    "github": {
+      "name": "GitHub API",
+      "baseURL": "https://api.github.com",
+      "auth": {
+        "type": "oauth2_device",
+        "config": {
+          "clientId": "${GITHUB_CLIENT_ID}",
+          "scope": "repo user",
+          "authorizationURL": "https://github.com/login/device/code",
+          "tokenURL": "https://github.com/login/oauth/access_token"
+        }
+      },
+      "retry": {
+        "enabled": true,
+        "maxAttempts": 3,
+        "strategy": "exponential",
+        "baseDelay": "1s",
+        "maxDelay": "10s"
+      },
+      "endpoints": [
+        {
+          "id": "repos_list",
+          "name": "List Repositories",
+          "description": "List user repositories",
+          "method": "GET",
+          "path": "/user/repos",
+          "parameters": [
+            {
+              "name": "type",
+              "description": "Repository type filter",
+              "type": "string",
+              "required": false,
+              "location": "query",
+              "default": "all",
+              "validation": {
+                "enum": ["all", "owner", "public", "private", "member"]
+              }
+            },
+            {
+              "name": "sort",
+              "description": "Sort repositories by",
+              "type": "string", 
+              "required": false,
+              "location": "query",
+              "default": "updated",
+              "validation": {
+                "enum": ["created", "updated", "pushed", "full_name"]
+              }
+            },
+            {
+              "name": "per_page",
+              "description": "Results per page (max 100)",
+              "type": "number",
+              "required": false,
+              "location": "query",
+              "default": 30,
+              "validation": {
+                "minimum": 1,
+                "maximum": 100
+              }
+            },
+            {
+              "name": "page",
+              "description": "Page number",
+              "type": "number",
+              "required": false,
+              "location": "query",
+              "default": 1,
+              "validation": {
+                "minimum": 1
+              }
+            }
+          ],
+          "response": {
+            "type": "json",
+            "paginated": true,
+            "paginationConfig": {
+              "nextPageTokenPath": "$.links.next",
+              "dataPath": "$",
+              "pageSize": 30
+            },
+            "caching": {
+              "enabled": true,
+              "ttl": "5m"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+## Troubleshooting
+
+### Common Issues
+
+**1. Parameter Naming Errors**
+```
+Error: tools.0.custom.input_schema.properties: Property keys should match pattern '^[a-zA-Z0-9_.-]{1,64}$'
+```
+**Cause**: Parameter names contain characters not allowed by MCP specification (`$`, `@`, spaces, etc.).
+
+**Solutions:**
+- Add explicit `alias` field to problematic parameters:
+  ```json
+  {"name": "$select", "alias": "select", "type": "string"}
+  ```
+- Review server logs for auto-sanitization warnings:
+  ```
+  WARNING: Auto-sanitized parameter '$filter' to 'filter' - consider adding explicit alias
+  ```
+- Check for alias conflicts (two parameters mapping to same MCP name)
+- Ensure aliases match MCP pattern: `^[a-zA-Z0-9_.-]{1,64}$`
+
+**2. Authentication Failures**
+```
+Error: Failed to apply authentication
+```
+**Solutions:**
+- Check environment variables are set correctly
+- Verify client ID and tenant ID for OAuth2
+- Ensure API token is valid for bearer auth
+- Check scopes include required permissions
+
+**2. Parameter Validation Errors**
+```
+Error: Parameter validation failed: required parameter missing
+```
+**Solutions:**
+- Check `required: true` parameters are provided
+- Verify parameter names match exactly
+- Check data types match parameter definitions
+- Validate enum values are in allowed list
+
+**3. URL Building Errors**
+```
+Error: Failed to build URL
+```
+**Solutions:**
+- Check path parameters have corresponding parameter definitions
+- Verify placeholder names match parameter names
+- Ensure base URL is valid and accessible
+
+**4. Response Parsing Errors**
+```
+Error: Failed to parse JSON response
+```
+**Solutions:**
+- Check API returns valid JSON
+- Verify response type matches actual response
+- Check transform expressions are valid
+- Validate pagination paths exist in response
+
+### Debug Tips
+
+**1. Enable Debug Logging**
+```bash
+./mcpfusion -config config.json -debug
+```
+
+**2. Test Individual Endpoints**
+Use the test scripts in `tests/` directory to verify each endpoint works correctly.
+
+**3. Check Environment Variables**
+```bash
+# List all environment variables
+env | grep -E "(CLIENT_ID|API_KEY|TOKEN)"
+
+# Check specific variable
+echo $CLIENT_ID
+```
+
+**4. Validate JSON Configuration**
+```bash
+# Use a JSON validator
+cat config.json | jq '.'
+```
+
+**5. Test Authentication Separately**
+Create a minimal config with just one endpoint to test authentication in isolation.
+
+### Error Categories
+
+| Error Type | Typical Causes | Solutions |
+|------------|---------------|-----------|
+| **Parameter Naming** | Special characters in parameter names | Add explicit `alias` fields, review MCP naming rules |
+| **Configuration** | Invalid JSON, missing fields | Validate JSON syntax, check required fields |
+| **Authentication** | Invalid credentials, expired tokens | Verify environment variables, refresh tokens |
+| **Network** | Connection issues, timeouts | Check network connectivity, increase timeouts |
+| **API** | Rate limiting, server errors | Implement retry logic, check API status |
+| **Validation** | Invalid parameters | Check parameter types and constraints |
+
+## Environment Variable Reference
+
+Add your API credentials to `/opt/mcpfusion/env` (MCPFusion auto-loads this file on startup):
+
+```bash
+# Microsoft 365
+MS365_CLIENT_ID=your-client-id
+MS365_TENANT_ID=your-tenant-id
+
+# Google APIs  
+GOOGLE_CLIENT_ID=your-google-client-id
+GOOGLE_CLIENT_SECRET=your-google-client-secret
+
+# Generic APIs
+API_KEY=your-api-key
+API_TOKEN=your-bearer-token
+API_BASE_URL=https://api.example.com
+
+# Basic Auth
+API_USERNAME=your-username
+API_PASSWORD=your-password
+```
+
+## Configuration Validation
+
+MCPFusion validates configurations on startup. Common validation errors:
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `parameter name conflict` | Two parameters map to same MCP name | Use different aliases or sanitized names |
+| `parameter name not MCP-compliant` | Alias contains invalid characters | Ensure alias matches `^[a-zA-Z0-9_.-]{1,64}$` |
+| `endpoint ID is required` | Missing `id` field | Add unique `id` to endpoint |
+| `parameter name is required` | Missing `name` field | Add `name` to parameter |
+| `invalid HTTP method` | Invalid `method` value | Use GET, POST, PUT, DELETE, PATCH |
+| `invalid parameter location` | Invalid `location` value | Use path, query, body, header |
+| `invalid parameter type` | Invalid `type` value | Use string, number, boolean, array, object |
+
+Always test your configuration with the provided test scripts before deploying to production.
+
+Copyright (c) 2025-2026 Tenebris Technologies Inc. See LICENSE for details.
+

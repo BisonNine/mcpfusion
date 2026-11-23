@@ -1,0 +1,246 @@
+/******************************************************************************
+ * Copyright (c) 2025-2026 Tenebris Technologies Inc.                         *
+ * Please see LICENSE file for details.                                       *
+ ******************************************************************************/
+
+package hub
+
+import (
+	"context"
+	"encoding/base64"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
+	"go.bison9.com/mcpfusion/fusion"
+	"go.bison9.com/mcpfusion/global"
+)
+
+// HTTPClient manages an HTTP MCP client connection
+type HTTPClient struct {
+	config       *fusion.ServiceConfig
+	manager      *MCPClientManager
+	backoff      *ExponentialBackoff
+	logger       global.Logger
+	disconnectCh chan struct{}
+	disconnectMu sync.Mutex
+}
+
+// NewHTTPClient creates a new HTTP client for the given service config
+func NewHTTPClient(config *fusion.ServiceConfig, opts ...ClientOption) *HTTPClient {
+	logger := newClientOptions(opts).logger
+	baseDelay := time.Second
+	maxDelay := 60 * time.Second
+	factor := 2.0
+
+	if config.Retry != nil {
+		if config.Retry.BaseDelay > 0 {
+			baseDelay = config.Retry.BaseDelay
+		}
+		if config.Retry.MaxDelay > 0 {
+			maxDelay = config.Retry.MaxDelay
+		}
+		if config.Retry.BackoffFactor > 0 {
+			factor = config.Retry.BackoffFactor
+		}
+	}
+
+	manager := NewMCPClientManager(config.ServiceKey, WithLogger(logger))
+	manager.SetCallTimeout(config.CallTimeout)
+
+	return &HTTPClient{
+		config:  config,
+		manager: manager,
+		backoff: NewExponentialBackoff(baseDelay, maxDelay, factor),
+		logger:  logger,
+	}
+}
+
+// Manager returns the underlying MCPClientManager
+func (h *HTTPClient) Manager() *MCPClientManager {
+	return h.manager
+}
+
+// Connect creates and connects the HTTP MCP client
+func (h *HTTPClient) Connect(ctx context.Context) error {
+	if h.logger != nil {
+		h.logger.Infof("Hub service '%s': connecting to HTTP endpoint: %s", h.config.ServiceKey, h.config.BaseURL)
+	}
+
+	// Build transport options
+	var opts []transport.StreamableHTTPCOption
+
+	// Apply auth headers based on config
+	headers := h.buildAuthHeaders()
+	if len(headers) > 0 {
+		opts = append(opts, transport.WithHTTPHeaders(headers))
+	}
+
+	// Create the streamable HTTP MCP client
+	c, err := client.NewStreamableHttpClient(h.config.BaseURL, opts...)
+	if err != nil {
+		return fmt.Errorf("failed to create HTTP client: %w", err)
+	}
+
+	h.manager.SetClient(c)
+
+	// Register notification handler before connecting
+	h.manager.RegisterNotificationHandler()
+
+	// Create a fresh disconnect channel for this connection
+	h.disconnectMu.Lock()
+	h.disconnectCh = make(chan struct{})
+	disconnectCh := h.disconnectCh
+	h.disconnectMu.Unlock()
+
+	// Register connection loss handler
+	c.OnConnectionLost(func(err error) {
+		if h.logger != nil {
+			h.logger.Errorf("Hub service '%s': connection lost: %v", h.config.ServiceKey, err)
+		}
+		h.manager.SetConnected(false)
+		// Signal waitForDisconnect
+		select {
+		case <-disconnectCh:
+			// Already closed
+		default:
+			close(disconnectCh)
+		}
+	})
+
+	// Initialize the MCP session
+	if err := h.manager.Connect(ctx); err != nil {
+		if closeErr := c.Close(); closeErr != nil {
+			if h.logger != nil {
+				h.logger.Warningf("Hub service '%s': failed to close client: %v", h.config.ServiceKey, closeErr)
+			}
+		}
+		h.manager.SetClient(nil)
+		return fmt.Errorf("failed to initialize: %w", err)
+	}
+
+	h.backoff.Reset()
+	if h.logger != nil {
+		h.logger.Infof("Hub service '%s': HTTP connection established", h.config.ServiceKey)
+	}
+	return nil
+}
+
+// buildAuthHeaders builds HTTP headers based on auth configuration
+func (h *HTTPClient) buildAuthHeaders() map[string]string {
+	headers := make(map[string]string)
+
+	switch h.config.Auth.Type {
+	case fusion.AuthTypeBearer:
+		if token, ok := h.config.Auth.Config["token"].(string); ok && token != "" {
+			headers["Authorization"] = "Bearer " + token
+		}
+	case fusion.AuthTypeBasic:
+		username, _ := h.config.Auth.Config["username"].(string)
+		password, _ := h.config.Auth.Config["password"].(string)
+		if username != "" {
+			encoded := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
+			headers["Authorization"] = "Basic " + encoded
+		}
+	case fusion.AuthTypeAPIKey:
+		if key, ok := h.config.Auth.Config["apiKey"].(string); ok && key != "" {
+			headerName := "X-API-Key"
+			if name, ok := h.config.Auth.Config["headerName"].(string); ok && name != "" {
+				headerName = name
+			}
+			headers[headerName] = key
+		}
+	case fusion.AuthTypeNone, "":
+		// No auth headers needed
+	}
+
+	return headers
+}
+
+// RunWithReconnect runs the client with automatic reconnection on failure.
+// This blocks until the context is cancelled.
+func (h *HTTPClient) RunWithReconnect(ctx context.Context, onConnected func(), onDisconnected func()) {
+	if h.logger != nil {
+		h.logger.Debugf("Hub service '%s': reconnect loop started", h.config.ServiceKey)
+	}
+	defer func() {
+		if h.logger != nil {
+			h.logger.Debugf("Hub service '%s': reconnect loop exiting", h.config.ServiceKey)
+		}
+	}()
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+
+		err := h.Connect(ctx)
+		if err != nil {
+			if h.logger != nil {
+				h.logger.Errorf("Hub service '%s': connection failed: %v (retrying in %v)",
+					h.config.ServiceKey, err, h.backoff.CurrentDelay())
+			}
+
+			if onDisconnected != nil {
+				onDisconnected()
+			}
+
+			if waitErr := h.backoff.Wait(ctx); waitErr != nil {
+				return
+			}
+			continue
+		}
+
+		if onConnected != nil {
+			onConnected()
+		}
+
+		// Wait until connection is lost or context is cancelled
+		h.waitForDisconnect(ctx)
+
+		if ctx.Err() != nil {
+			return
+		}
+
+		if h.logger != nil {
+			h.logger.Warningf("Hub service '%s': disconnected, will reconnect in %v",
+				h.config.ServiceKey, h.backoff.CurrentDelay())
+		}
+
+		if onDisconnected != nil {
+			onDisconnected()
+		}
+
+		if err := h.manager.Disconnect(); err != nil {
+			if h.logger != nil {
+				h.logger.Warningf("Hub service '%s': failed to close client: %v", h.config.ServiceKey, err)
+			}
+		}
+
+		if waitErr := h.backoff.Wait(ctx); waitErr != nil {
+			return
+		}
+	}
+}
+
+// waitForDisconnect blocks until the client disconnects or context is cancelled
+func (h *HTTPClient) waitForDisconnect(ctx context.Context) {
+	h.disconnectMu.Lock()
+	ch := h.disconnectCh
+	h.disconnectMu.Unlock()
+
+	if ch == nil {
+		return
+	}
+
+	select {
+	case <-ctx.Done():
+	case <-ch:
+	}
+}
+
+// Close disconnects the HTTP client
+func (h *HTTPClient) Close() error {
+	return h.manager.Disconnect()
+}

@@ -1,0 +1,261 @@
+# Changelog
+
+Breaking changes to exported identifiers, signatures or behaviour, for the
+applications that import MCPFusion packages.
+
+## 0.4.13
+
+### Module path
+
+- **Breaking:** the module moved from `github.com/PivotLLM/MCPFusion` to
+  `go.bison9.com/mcpfusion`, and the nested module from
+  `github.com/PivotLLM/MCPFusion/cmd/auth` to
+  `go.bison9.com/mcpfusion/cmd/auth`. The API is unchanged; importers must
+  switch their imports to the new paths.
+- `configs/wxus.json` now sends
+  `MCPFusion (https://github.com/BisonNine/mcpfusion)` as the default
+  `User-Agent`.
+
+### Dependencies
+
+- **Breaking:** the `toolspec` package moved, unchanged in API, from
+  `github.com/PivotLLM/toolspec` to `go.bison9.com/agent/toolspec` (module
+  `go.bison9.com/agent`). The `toolspec` types in MCPFusion's API, such as the
+  `toolspec.DataStore` taken by `NewDataStoreTokenStore`, now come from the new
+  path, so importers must switch their own imports to
+  `go.bison9.com/agent/toolspec`.
+- Requires Go 1.27.4.
+
+## 0.4.11
+
+### Changed
+
+- **A JSON response over the response size limit is shortened, not refused.**
+  A response larger than `fusion.WithMaxResponseBytes` (1 MB by default) used
+  to be replaced whole by the text `Response too large (...)`, so one long
+  text value, such as the HTML body of an e-mail, made its whole record
+  unreadable. The longest text values are now cut, longest first, until the
+  response fits. The result is valid JSON: every key, number, list element
+  and object is as the API returned it, each cut value ends with
+  ` ... [truncated: first N of M characters]`, and a response that is a JSON
+  object gets a `_truncated` member (`note`, `limit_bytes`, `original_bytes`,
+  and `fields` with each cut value's `path`, `original_chars` and
+  `kept_chars`; at most 50, the rest counted in `more_fields`). A response
+  that is a JSON list keeps its shape and has only the markers. Nothing is
+  ever dropped: a response that is too large because it holds many records
+  is still refused, with the text `Response too large (..., even with its
+  long text values shortened. Request fewer records or fields and try
+  again.`. Callers that matched the old refusal text for a single large
+  record now get JSON instead; `text` and `binary` responses are unchanged.
+- `configs/microsoft365.json`: `mail_read_message` now always asks Microsoft
+  Graph for the message body as plain text (a static `Prefer:
+  outlook.body-content-type="text"` header), so `body.content` is text and
+  `body.contentType` is `text`, not HTML. A caller that needs the HTML must
+  use its own copy of the config without that parameter.
+
+### Added
+
+- `configs/microsoft365.json`: `mail_folder_messages` takes `$orderby`
+  (exposed as `orderby`), with the same values as `mail_read_inbox` and no
+  default, so a folder can be listed oldest first and paged with `$skip`.
+
+## 0.4.10
+
+### Changed
+
+- `configs/wxus.json` now sends `MCPFusion (https://github.com/PivotLLM/MCPFusion)`
+  as its default `User-Agent` to Nominatim and the National Weather Service.
+
+## 0.4.9
+
+### Security
+
+- Folders created by `fusion` and `hub` when saving downloaded content now get
+  their mode through a descriptor opened on the new folder, not by path. If a
+  symlink or another entry replaces the folder between its creation and the
+  mode change, the save fails instead of changing the permissions of whatever
+  the path now points to.
+
+## 0.4.8
+
+### Fixed
+
+- The modes set by `fusion.WithFileModes`, `hub.WithFileModes` and
+  `hub.FormatOptions.DirMode`/`FileMode` are now applied exactly, whatever the
+  process umask. Previously the umask narrowed them (0770/0660 became
+  0750/0640 under umask 022), so a group-writable configuration did not take
+  effect. Folders that already exist are still left as they are.
+
+## 0.4.7
+
+### Added
+
+- `fusion.WithFileModes(dir, file fs.FileMode)` and
+  `hub.WithFileModes(dir, file fs.FileMode)` set the permissions for
+  directories and files created when saving downloaded content. Defaults are
+  0750 and 0640 (`global.DefaultDirMode`, `global.DefaultFileMode`), as
+  before; a zero value keeps the default.
+- `hub.FormatOptions` gains `DirMode` and `FileMode`; zero means the default.
+
+## 0.4.6
+
+### Dependencies
+
+- Requires Go 1.27.2.
+- `github.com/tenebris-tech/mlogger` v0.0.5: the `*Fields` methods now take a
+  message first (`InfoFields(msg string, args ...any)`). `global.Logger`
+  implementations must be updated to match.
+- `github.com/mark3labs/mcp-go` v1.2.1 (was v0.55.1).
+- `github.com/PivotLLM/toolspec` v0.4.0.
+
+### Log format
+
+- Per-request log lines now begin with `request` before the key=value fields
+  (`request method=… path=…`).
+
+### Error strings
+
+String length validation errors now state which limit was exceeded and its
+value (previously the limits were printed as pointer addresses):
+
+- `string length must be between %d and %d (actual: %d)`
+  → `string length %d is less than minimum %d` or `string length %d exceeds maximum %d`
+
+## 0.4.5
+
+### Identity and behaviour
+
+- Removed `global.AppName` and `global.AppVersion`. The application identity
+  now lives in the `app` package; use `app.Name()`, `app.Version()` (display)
+  or `app.SemVer()` (protocol handshakes and comparisons).
+- `-debug` now defaults to false. Deployments that relied on debug logging
+  must pass `-debug` (for example in `mcpfusion.service`).
+- `mcpserver.MCPServer.Start()` now returns an error when the listen address
+  cannot be opened, instead of running with nothing listening.
+- The auth helper is built as `fusion-auth` (was `fusion-oauth`) and sends
+  User-Agent `fusion-auth/<version>`.
+- Removed `fusion.InMemoryCache` (deprecated, empty).
+
+### Error strings
+
+Callers that match on the exact text must be updated:
+
+- `hub service '%s' is currently unavailable. The server will automatically reconnect`
+  → `hub service '%s' is unavailable (reconnecting automatically)`
+- `this tool performs a destructive operation and is currently disabled. Set the MCP_FUSION_ALLOW_DESTRUCTIVE environment variable to 'true' to enable destructive tools`
+  → `destructive operations are disabled (set MCP_FUSION_ALLOW_DESTRUCTIVE=true to allow)`
+- `no stored token found for this service. Please run fusion-auth to authenticate.`
+  (`OAuth2ExternalStrategy.Authenticate`) → `no stored token for this service (authenticate with fusion-auth)`
+- `no user ID associated with this API key — link with: mcpfusion -user-link <user_id>:<key_hash>`
+  → `no user ID linked to this API key (link with mcpfusion -user-link <user_id>:<key_hash>)`
+
+### `fusion.New`
+
+- `fusion.New(options ...Option) *Fusion` → `fusion.New(options ...Option) (*Fusion, error)`.
+  An auth manager without a cache now returns an error instead of panicking.
+
+### Logger is now a `WithLogger` option
+
+- Each of `fusion`, `hub` and `mcpserver` has one `WithLogger(global.Logger)`,
+  returning a `LoggerOption` accepted by the package's main constructor and its
+  other constructors. With no logger (or nil) components log nothing;
+  `mcpserver.New` still requires one.
+- New exported types: `fusion.ComponentOption`, `fusion.LoggerOption`,
+  `hub.ClientOption`, `hub.LoggerOption`, `mcpserver.TransportOption`,
+  `mcpserver.LoggerOption`.
+- `fusion.Option`, `hub.HubOption` and `mcpserver.Option` are now interfaces
+  instead of function types. Options built from raw functions no longer
+  compile; the `With…` functions are unchanged.
+- `fusion.WithLogger` and `mcpserver.WithLogger` now return `LoggerOption`.
+- **fusion** (replace a positional `logger` with a trailing `fusion.WithLogger(logger)`):
+  - `NewCommandExecutor(opts ...ComponentOption)`
+  - `NewMultiTenantAuthManager(database TokenStore, cache Cache, opts ...ComponentOption)`
+  - `NewOAuth2DeviceFlowStrategy(httpClient *http.Client, opts ...ComponentOption)`
+  - `NewBearerTokenStrategy(opts ...ComponentOption)`
+  - `NewAPIKeyStrategy(opts ...ComponentOption)`
+  - `NewBasicAuthStrategy(opts ...ComponentOption)`
+  - `NewSessionJWTStrategy(httpClient *http.Client, opts ...ComponentOption)`
+  - `NewUserCredentialsStrategy(opts ...ComponentOption)`
+  - `NewOAuth2ExternalStrategy(httpClient *http.Client, opts ...ComponentOption)`
+  - `NewDatabaseCache(database TokenStore, opts ...ComponentOption)`
+  - `NewDatabaseCacheWithDefaultTTL(database TokenStore, defaultTTL time.Duration, opts ...ComponentOption)` (TTL moves before the options)
+  - `NewDataStoreTokenStore(ds toolspec.DataStore, opts ...ComponentOption)`
+  - `NewMetricsCollector(enabled bool, opts ...ComponentOption)` (was `(logger, enabled)`)
+  - `NewTimeTokenProcessor(opts ...ComponentOption)`
+  - `NewValidator(opts ...ComponentOption)`
+  - `NewMapper(opts ...ComponentOption)`
+  - `NewRetryExecutor(config *RetryConfig, opts ...ComponentOption)`
+  - `NewCircuitBreaker(config *CircuitBreakerConfig, opts ...ComponentOption)`
+- **hub:**
+  - `NewSSEClient(config *fusion.ServiceConfig, opts ...ClientOption)`
+  - `NewHTTPClient(config *fusion.ServiceConfig, opts ...ClientOption)`
+  - `NewStdioClient(config *fusion.ServiceConfig, opts ...ClientOption)`
+  - `NewMCPClientManager(serviceName string, opts ...ClientOption)`
+  - `NewHubProvider(configs map[string]*fusion.ServiceConfig, opts ...HubOption)` (logger via `hub.WithLogger`)
+- **mcpserver:**
+  - `NewAuthenticatedTransport(underlying http.Handler, middleware func(http.Handler) http.Handler, opts ...TransportOption)`
+    (was `underlying MCPServerTransport` with a positional logger; it can no longer return nil)
+  - `NewExtendedTransport(sseTransport, httpTransport MCPServerTransport, oauthEngine OAuthRouteProvider, authMiddleware func(http.Handler) http.Handler, opts ...TransportOption)`
+  - New methods `(*AuthenticatedTransport).Serve(net.Listener) error` and
+    `(*ExtendedTransport).Serve(net.Listener) error`.
+
+### Removed `Get` prefixes
+
+**config**
+- `Manager.GetService` → `Service`
+- `Manager.GetAllServices` → `Services`
+- `Manager.GetServiceNames` → `ServiceNames`
+- `Manager.GetAvailableServices` → `AvailableServices`
+- `Manager.GetServiceAuthConfig` → `ServiceAuthConfig`
+- `Manager.GetConfig` → `Config`
+- `Manager.GetCommand` → `Command`
+- `Manager.GetAllCommands` → `Commands`
+- `Manager.GetCommandGroupNames` → `CommandGroupNames`
+
+**db** (the same renames apply to the `db.Database` interface)
+- `DB.GetUser` → `LoadUser`
+- `DB.GetUserByAPIKey` → `LookupUserByAPIKey`
+- `DB.GetOAuthToken` → `LoadOAuthToken`
+- `DB.GetKnowledge` → `LoadKnowledge`
+- `DB.GetTenantInfo` → `LoadTenantInfo`
+- `DB.GetTenantResourceCount` → `CountTenantResources`
+- `DB.GetCredentials` → `LoadCredentials`
+- `DB.GetCredentialsByType` → `LoadCredentialsByType`
+- `DB.GetAPITokenMetadata` → `LoadAPITokenMetadata`
+
+**fusion**
+- `APIError.GetCategory` removed; use the `Category` field
+- `NetworkError.GetRetryAfter` → `RetryDelay`
+- `GetBodyEncoder` → `LookupBodyEncoder`
+- `AuthenticationError`, `ConfigurationError`, `ValidationError`: `GetUserFriendlyMessage` → `UserFriendlyMessage`
+- `AuthStrategy.GetAuthType` → `Type` (interface and all seven strategies)
+- `TokenInfo.GetAuthorizationHeader` → `AuthorizationHeader`
+- `MetricsCollector`: `GetServiceMetrics` → `ServiceMetrics`, `GetAllMetrics` → `AllMetrics`, `GetGlobalMetrics` → `GlobalMetrics`, `GetErrorRate` → `ErrorRate`
+- `MultiTenantAuthManager`: `GetUserCredentials` → `LoadUserCredentials`, `GetToken` → `AcquireToken`, `GetRegisteredStrategies` → `RegisteredStrategies`, `GetTenantTokens` → `ListTenantTokens`
+- `DatabaseCache.GetStats` → `Stats`
+- `TimeTokenProcessor.GetSupportedTokens` → `SupportedTokens`
+- `GetMCPParameterName` → `MCPParameterName`
+- `ParameterNameMapper`: `GetOriginalName` → `OriginalName`, `GetMCPName` → `MCPName`
+- `Fusion`: `GetConfig` → `Config`, `GetHTTPClient` → `HTTPClient`, `GetCache` → `Cache`, `GetLogger` → `Logger`, `GetServiceNames` → `ServiceNames`, `GetService` → `Service`, `GetEndpoint` → `Endpoint`, `GetCircuitBreakerMetrics` → `CircuitBreakerMetrics`, `GetAllCircuitBreakerMetrics` → `AllCircuitBreakerMetrics`, `GetMetrics` → `Metrics`, `GetServiceMetrics` → `ServiceMetrics`, `GetGlobalMetrics` → `GlobalMetrics`, `GetCircuitBreakerSource` → `CircuitBreakerSource`
+- `MultiTenantFusion`: `GetFusionForTenant` → `FusionForTenant`, `GetResource` → `ReadResource`, `GetPrompt` → `RenderPrompt`, `GetAuthManager` → `AuthManager`, `GetDatabaseCache` → `DatabaseCache`, `GetStats` → `Stats`
+- `TokenStore`: `GetOAuthToken` → `LoadOAuthToken`, `GetCredentials` → `LoadCredentials` (interface and implementations)
+- `CircuitBreaker`: `GetState` → `State`, `GetMetrics` → `Metrics`
+- `AuthConfig.GetEffectiveTokenInvalidationConfig` → `EffectiveTokenInvalidationConfig`
+- `ServiceConfig`: `GetEndpointByID` → `EndpointByID`, `GetEffectiveCircuitBreakerConfig` → `EffectiveCircuitBreakerConfig`
+- `EndpointConfig`: `GetRequiredParameters` → `RequiredParameters`, `GetParameterByName` → `ParameterByName`, `GetEffectiveRetryConfig` → `EffectiveRetryConfig`
+- `ParameterConfig.GetTransformedParameterName` → `TransformedParameterName`
+- `Config`: `GetServiceByName` → `ServiceByName`, `GetAllEndpoints` → `AllEndpoints`, `GetRequiredEnvironmentVariables` → `RequiredEnvironmentVariables`
+- `WithConfigManager` now takes `interface{ Config() *Config }`
+
+**hub**
+- `MCPClientManager.GetCachedTools` → `CachedTools`
+
+**mcpserver**
+- `MCPServer.GetMCPServer` → `Server`
+- `ServiceProvider`: `GetAvailableServices` → `AvailableServices`, `GetService` → `Service`, `GetServiceAuthConfig` → `ServiceAuthConfig`
+
+**metrics**
+- `Collector`: `GetServiceStats` → `ServiceStats`, `GetAllServiceStats` → `AllServiceStats`, `GetUptime` → `Uptime`
+
+**providers/health**
+- `CircuitBreakerSource.GetAllCircuitBreakerMetrics` → `AllCircuitBreakerMetrics`
