@@ -8,7 +8,7 @@ require (
 	github.com/mark3labs/mcp-go v1.6.0
 	github.com/stretchr/testify v1.11.1
 	github.com/tenebris-tech/mlogger v0.0.5
-	go.bison9.com/agent v0.0.0-20261122125050-eb27b0c024b3
+	go.bison9.com/agent v0.2.1
 	go.etcd.io/bbolt v1.5.0
 )
 
