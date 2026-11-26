@@ -81,7 +81,7 @@ func (h *CommandHandler) buildExecutionConfig(args map[string]any) ExecutionConf
 	// Process parameters in order
 	for _, param := range h.command.Parameters {
 		// Get value (use default if not provided and not required)
-		value, exists := args[param.Name]
+		value, exists := lookupArg(args, param.Name)
 		if !exists {
 			if param.Default != nil {
 				value = param.Default

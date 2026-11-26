@@ -183,3 +183,29 @@ func SuggestAlias(paramName string) string {
 	// For other parameters, just sanitize
 	return SanitizeParameterName(paramName)
 }
+
+// lookupArg retrieves a parameter value from args, treating nil and empty
+// string ("") as not provided so LLM tool calls that send "" or null for
+// omitted parameters behave identically to omitting the key.
+func lookupArg(args map[string]any, name string) (any, bool) {
+	val, exists := args[name]
+	if !exists || val == nil {
+		return nil, false
+	}
+	if str, ok := val.(string); ok && str == "" {
+		return nil, false
+	}
+	return val, true
+}
+
+// stripEmptyArgs removes entries whose value is nil or an empty string ("")
+// from args in place.
+func stripEmptyArgs(args map[string]any) {
+	for k, v := range args {
+		if v == nil {
+			delete(args, k)
+		} else if str, ok := v.(string); ok && str == "" {
+			delete(args, k)
+		}
+	}
+}

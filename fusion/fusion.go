@@ -1158,7 +1158,7 @@ func (f *Fusion) buildRequest(ctx context.Context, serviceName string, service *
 				param.Name, param.Type, param.Location, param.Required)
 		}
 
-		value, provided := options[param.Name]
+		value, provided := lookupArg(options, param.Name)
 
 		// Check if required parameter is missing
 		if param.Required && !provided {
@@ -1295,7 +1295,7 @@ func (f *Fusion) buildRequest(ctx context.Context, serviceName string, service *
 	headerCount := 0
 	for _, param := range endpoint.Parameters {
 		if param.Location == ParameterLocationHeader {
-			if value, exists := options[param.Name]; exists {
+			if value, exists := lookupArg(options, param.Name); exists {
 				headerName := param.TransformedParameterName()
 				headerValue := fmt.Sprintf("%v", value)
 				req.Header.Set(headerName, headerValue)

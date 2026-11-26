@@ -6,12 +6,16 @@
 package fusion
 
 import (
+	"context"
 	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.bison9.com/mcpfusion/global"
 )
 
 func Test_setNestedValue(t *testing.T) {
@@ -285,4 +289,251 @@ func TestMapper_BuildRequestBody_NoEncoding_FlatParams(t *testing.T) {
 
 	assert.Equal(t, "alice@example.com", result["to"])
 	assert.Equal(t, "Test", result["subject"])
+}
+
+func TestMapper_ApplyQueryParams_EmptyOptionalOmitted(t *testing.T) {
+	mapper := NewMapper()
+
+	params := []ParameterConfig{
+		{
+			Name:     "foo",
+			Type:     ParameterTypeString,
+			Location: ParameterLocationQuery,
+			Required: false,
+		},
+		{
+			Name:     "withDefault",
+			Type:     ParameterTypeString,
+			Location: ParameterLocationQuery,
+			Required: false,
+			Default:  "defaultVal",
+		},
+		{
+			Name:     "zeroNum",
+			Type:     ParameterTypeNumber,
+			Location: ParameterLocationQuery,
+			Required: false,
+		},
+		{
+			Name:     "falseBool",
+			Type:     ParameterTypeBoolean,
+			Location: ParameterLocationQuery,
+			Required: false,
+		},
+	}
+
+	tests := []struct {
+		name      string
+		args      map[string]any
+		wantQuery string
+	}{
+		{
+			name:      "optional param omitted from args",
+			args:      map[string]any{},
+			wantQuery: "withDefault=defaultVal",
+		},
+		{
+			name: "optional param supplied as empty string",
+			args: map[string]any{
+				"foo":         "",
+				"withDefault": "",
+			},
+			wantQuery: "withDefault=defaultVal",
+		},
+		{
+			name: "optional param supplied as nil",
+			args: map[string]any{
+				"foo":         nil,
+				"withDefault": nil,
+			},
+			wantQuery: "withDefault=defaultVal",
+		},
+		{
+			name: "zero and false values are preserved",
+			args: map[string]any{
+				"foo":       "",
+				"zeroNum":   0,
+				"falseBool": false,
+			},
+			wantQuery: "falseBool=false&withDefault=defaultVal&zeroNum=0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, "https://api.example.com/items", nil)
+			require.NoError(t, err)
+
+			err = mapper.ApplyQueryParams(req, params, tt.args)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantQuery, req.URL.RawQuery)
+		})
+	}
+}
+
+func TestMapper_ApplyHeaders_And_BuildRequestBody_EmptyOptionalOmitted(t *testing.T) {
+	mapper := NewMapper()
+
+	params := []ParameterConfig{
+		{
+			Name:     "X-Optional",
+			Type:     ParameterTypeString,
+			Location: ParameterLocationHeader,
+			Required: false,
+		},
+		{
+			Name:     "X-Default",
+			Type:     ParameterTypeString,
+			Location: ParameterLocationHeader,
+			Required: false,
+			Default:  "def-hdr",
+		},
+		{
+			Name:     "optBody",
+			Type:     ParameterTypeString,
+			Location: ParameterLocationBody,
+			Required: false,
+		},
+		{
+			Name:     "defBody",
+			Type:     ParameterTypeString,
+			Location: ParameterLocationBody,
+			Required: false,
+			Default:  "def-body",
+		},
+	}
+
+	args := map[string]any{
+		"X-Optional": "",
+		"X-Default":  "",
+		"optBody":    "",
+		"defBody":    nil,
+	}
+
+	req, err := http.NewRequest(http.MethodPost, "https://api.example.com/items", nil)
+	require.NoError(t, err)
+	require.NoError(t, mapper.ApplyHeaders(req, params, args))
+	assert.Empty(t, req.Header.Get("X-Optional"))
+	assert.Equal(t, "def-hdr", req.Header.Get("X-Default"))
+
+	body, err := mapper.BuildRequestBody(params, args, nil)
+	require.NoError(t, err)
+	_, hasOpt := body["optBody"]
+	assert.False(t, hasOpt, "empty optional body parameter should be omitted")
+	assert.Equal(t, "def-body", body["defBody"])
+}
+
+func TestValidator_EmptyOptionalAndRequiredParameters(t *testing.T) {
+	validator := NewValidator()
+
+	params := []ParameterConfig{
+		{
+			Name:     "reqParam",
+			Type:     ParameterTypeString,
+			Location: ParameterLocationQuery,
+			Required: true,
+		},
+		{
+			Name:     "optPattern",
+			Type:     ParameterTypeString,
+			Location: ParameterLocationQuery,
+			Required: false,
+			Validation: &ValidationConfig{
+				Pattern: "^\\d{8}$",
+			},
+		},
+		{
+			Name:     "optNumber",
+			Type:     ParameterTypeNumber,
+			Location: ParameterLocationQuery,
+			Required: false,
+		},
+		{
+			Name:     "optDefault",
+			Type:     ParameterTypeString,
+			Location: ParameterLocationQuery,
+			Required: false,
+			Default:  "fallback",
+		},
+	}
+
+	// Optional parameters passed as "" or nil should be skipped (or defaulted) without validation errors
+	args := map[string]any{
+		"reqParam":   "ok",
+		"optPattern": "",
+		"optNumber":  nil,
+		"optDefault": "",
+	}
+	require.NoError(t, validator.ValidateParameters(params, args))
+	_, hasOptPattern := args["optPattern"]
+	assert.False(t, hasOptPattern, "empty optional parameter should be removed from args")
+	_, hasOptNumber := args["optNumber"]
+	assert.False(t, hasOptNumber, "nil optional parameter should be removed from args")
+	assert.Equal(t, "fallback", args["optDefault"], "empty optional parameter with default should receive default")
+
+	// Required parameter passed as "" should fail validation
+	err := validator.ValidateParameters(params, map[string]any{"reqParam": ""})
+	require.Error(t, err, "required parameter with empty string should fail validation")
+}
+
+func TestHTTPHandler_EmptyOptionalQueryParamNotSent(t *testing.T) {
+	var receivedRawQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedRawQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	f, err := New(WithConfig(&Config{
+		Services: map[string]*ServiceConfig{
+			"test": {
+				Name:    "Test",
+				BaseURL: srv.URL,
+				Auth:    AuthConfig{Type: AuthTypeNone},
+				Endpoints: []EndpointConfig{
+					{
+						ID:          "list",
+						Name:        "List",
+						Description: "list items",
+						Method:      "GET",
+						Path:        "/items",
+						Parameters: []ParameterConfig{
+							{
+								Name:     "foo",
+								Type:     ParameterTypeString,
+								Location: ParameterLocationQuery,
+								Required: false,
+							},
+							{
+								Name:     "$orderby",
+								Alias:    "orderby",
+								Type:     ParameterTypeString,
+								Location: ParameterLocationQuery,
+								Required: false,
+							},
+						},
+						Response: ResponseConfig{Type: ResponseTypeText},
+					},
+				},
+			},
+		},
+	}))
+	require.NoError(t, err)
+
+	svc := f.Service("test")
+	ep := svc.EndpointByID("list")
+	handler := NewHTTPHandler(f, svc, ep)
+
+	ctx := context.WithValue(context.Background(), global.TenantContextKey, &TenantContext{
+		TenantHash:  "tenant-test",
+		ServiceName: "test",
+	})
+
+	_, err = handler.Handle(ctx, map[string]any{
+		"foo":     "",
+		"orderby": "",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "", receivedRawQuery, "empty optional query parameters must not be sent as ?foo=")
 }

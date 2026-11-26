@@ -87,6 +87,10 @@ func (h *HTTPHandler) Handle(ctx context.Context, args map[string]any) (string, 
 		}
 	}
 
+	// Strip nil and empty-string argument values so omitted optional parameters
+	// supplied as "" or null by the LLM are treated as not provided.
+	stripEmptyArgs(args)
+
 	// Process time tokens in parameter values
 	timeTokenProcessor := NewTimeTokenProcessor(WithLogger(h.fusion.logger))
 	args = timeTokenProcessor.ProcessParameterArgs(args)
@@ -401,11 +405,11 @@ func (h *HTTPHandler) Handle(ctx context.Context, args map[string]any) (string, 
 	return result, nil
 }
 
-// hasFileParams returns true if any parameter with location "file" or "filepath" has a value in args.
+// hasFileParams returns true if any parameter with location "file" or "filepath" has a non-empty value in args.
 func hasFileParams(params []ParameterConfig, args map[string]any) bool {
 	for _, p := range params {
 		if p.Location == ParameterLocationFile || p.Location == ParameterLocationFilePath {
-			if _, ok := args[p.Name]; ok {
+			if _, ok := lookupArg(args, p.Name); ok {
 				return true
 			}
 		}
@@ -421,8 +425,8 @@ func buildMultipartBody(params []ParameterConfig, args map[string]any) (io.Reade
 	writer := multipart.NewWriter(&buf)
 
 	for _, param := range params {
-		val, ok := args[param.Name]
-		if !ok || val == nil {
+		val, ok := lookupArg(args, param.Name)
+		if !ok {
 			continue
 		}
 
@@ -435,7 +439,7 @@ func buildMultipartBody(params []ParameterConfig, args map[string]any) (io.Reade
 
 			fileName := "attachment.txt"
 			if param.FileNameParam != "" {
-				if fnVal, ok := args[param.FileNameParam]; ok && fnVal != nil {
+				if fnVal, ok := lookupArg(args, param.FileNameParam); ok {
 					fileName = fmt.Sprintf("%v", fnVal)
 				}
 			}
@@ -459,7 +463,7 @@ func buildMultipartBody(params []ParameterConfig, args map[string]any) (io.Reade
 			// Determine display filename: prefer FileNameParam arg, then basename of path
 			fileName := filepath.Base(filePath)
 			if param.FileNameParam != "" {
-				if fnVal, ok := args[param.FileNameParam]; ok && fnVal != nil {
+				if fnVal, ok := lookupArg(args, param.FileNameParam); ok {
 					fileName = fmt.Sprintf("%v", fnVal)
 				}
 			}

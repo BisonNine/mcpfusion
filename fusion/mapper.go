@@ -41,7 +41,7 @@ func (m *Mapper) BuildURL(baseURL, path string, params []ParameterConfig, args m
 			continue
 		}
 
-		value, exists := args[param.Name]
+		value, exists := lookupArg(args, param.Name)
 
 		// For static parameters, always use the default value
 		if param.Static {
@@ -101,7 +101,7 @@ func (m *Mapper) ApplyQueryParams(req *http.Request, params []ParameterConfig, a
 			continue
 		}
 
-		value, exists := args[param.Name]
+		value, exists := lookupArg(args, param.Name)
 
 		// For static parameters, always use the default value
 		if param.Static {
@@ -168,7 +168,7 @@ func (m *Mapper) ApplyHeaders(req *http.Request, params []ParameterConfig, args 
 			continue
 		}
 
-		value, exists := args[param.Name]
+		value, exists := lookupArg(args, param.Name)
 
 		// For static parameters, always use the default value
 		if param.Static {
@@ -259,7 +259,7 @@ func (m *Mapper) BuildRequestBody(params []ParameterConfig, args map[string]any,
 			continue
 		}
 
-		value, exists := args[param.Name]
+		value, exists := lookupArg(args, param.Name)
 
 		// For static parameters, always use the default value
 		if param.Static {
