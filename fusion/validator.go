@@ -36,7 +36,7 @@ func (v *Validator) ValidateParameters(params []ParameterConfig, args map[string
 	}
 
 	for _, param := range params {
-		value, exists := args[param.Name]
+		value, exists := lookupArg(args, param.Name)
 
 		// Check required parameters
 		if param.Required && !exists {
@@ -48,12 +48,14 @@ func (v *Validator) ValidateParameters(params []ParameterConfig, args map[string
 
 		// Skip validation if parameter not provided and not required
 		if !exists {
-			// Apply default value if specified
+			// Apply default value if specified; otherwise remove any empty placeholder
 			if param.Default != nil {
 				args[param.Name] = param.Default
 				if v.logger != nil {
 					v.logger.Debugf("Applied default value for parameter %s: %v", param.Name, param.Default)
 				}
+			} else {
+				delete(args, param.Name)
 			}
 			continue
 		}

@@ -259,3 +259,64 @@ func TestSuggestAlias(t *testing.T) {
 		})
 	}
 }
+
+func TestLookupArg(t *testing.T) {
+	args := map[string]any{
+		"empty":   "",
+		"nilVal":  nil,
+		"nonEmp":  "value",
+		"zero":    0,
+		"falseB":  false,
+		"emptySl": []any{},
+	}
+
+	if _, ok := lookupArg(args, "missing"); ok {
+		t.Error("expected missing key to return false")
+	}
+	if _, ok := lookupArg(args, "empty"); ok {
+		t.Error("expected empty string to return false")
+	}
+	if _, ok := lookupArg(args, "nilVal"); ok {
+		t.Error("expected nil value to return false")
+	}
+	if v, ok := lookupArg(args, "nonEmp"); !ok || v != "value" {
+		t.Errorf("expected nonEmp='value', got %v, %v", v, ok)
+	}
+	if v, ok := lookupArg(args, "zero"); !ok || v != 0 {
+		t.Errorf("expected zero=0, got %v, %v", v, ok)
+	}
+	if v, ok := lookupArg(args, "falseB"); !ok || v != false {
+		t.Errorf("expected falseB=false, got %v, %v", v, ok)
+	}
+	if _, ok := lookupArg(args, "emptySl"); !ok {
+		t.Error("expected empty slice to return true")
+	}
+}
+
+func TestStripEmptyArgs(t *testing.T) {
+	args := map[string]any{
+		"empty":  "",
+		"nilVal": nil,
+		"keep":   "hello",
+		"zero":   0,
+		"falseB": false,
+	}
+
+	stripEmptyArgs(args)
+
+	if _, exists := args["empty"]; exists {
+		t.Error("expected 'empty' key to be deleted")
+	}
+	if _, exists := args["nilVal"]; exists {
+		t.Error("expected 'nilVal' key to be deleted")
+	}
+	if args["keep"] != "hello" {
+		t.Errorf("expected 'keep' to remain 'hello', got %v", args["keep"])
+	}
+	if args["zero"] != 0 {
+		t.Errorf("expected 'zero' to remain 0, got %v", args["zero"])
+	}
+	if args["falseB"] != false {
+		t.Errorf("expected 'falseB' to remain false, got %v", args["falseB"])
+	}
+}
